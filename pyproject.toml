@@ -1,0 +1,16 @@
+[project]
+name = "precisbox"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.121.0",
+    "openai>=2.7.1",
+    "pymongo>=4.15.3",
+    "pypdf2>=3.0.1",
+    "python-dotenv>=1.2.1",
+    "python-multipart>=0.0.20",
+    "sqlalchemy>=2.0.44",
+    "uvicorn[standard]>=0.38.0",
+]

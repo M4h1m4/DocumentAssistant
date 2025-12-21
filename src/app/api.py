@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import os 
+from uuid import uuid4
+from typing import Tuple, Dict, List, Any, Optional 
+from datetime import datetime 
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query
+from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+import anyio
+from .schemas import (
+    DocCreateResponse,
+    DocMetaResponse,
+    DocSummaryResponse,
+    DocListResponse,
+)
+from .services.hashing import sha256_bytes, decode_text
+from .services.summarize import summarize_text
+from .db_sql import (
+    insert_document,
+    fetch_documents,
+    list_documents,
+    set_status,
+)
+from .db_mongo import (
+    get_mongo_client,
+    put_raw_doc,
+    put_summary,
+    get_summary,
+)
+
+load_dotenv()
+
+router = APIRouter()
+
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB: str = os.getenv("MONGO_DB", "precisbox")
+SQLITE_PATH: str = os.getenv("SQLITE_PATH","./meta.db")
+MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", "2000000"))
+
+"""
+#row["x"] is used for columns that are guaranteed to exist
+#Incase if they don't exists and we still want to continue the application without any error like keyerrors we use row.get("x") cause .get returns null if the key does not exist. 
+Hence we should also define these columns optional in the schemas.py
+"""
+def _to_meta(row: Dict[str, Any]) -> DocMetaResponse:
+    return DocMetaResponse(
+        id=row["id"],
+        filename=row["filename"],
+        size=int(row["size"]),
+        mime=row["mime"],
+        sha256=row["sha256"],
+        status=row["status"],
+        model=row["model"],
+        prompt_tokens=row.get("prompt_tokens"), 
+        completion_tokens=row.get("completion_tokens"),
+        last_error=row.get("last_error"),
+        created_at=datetime.fromisoformat(row["creaed_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def summarize_background(doc_id: str, text:str) -> None:
+    #FastAPI background task and writes status to sqlite and summary to mongodb
+    set_status(SQLITE_PATH, doc_id, "processing", model=OPENAI_MODEL) #set the status to processing
+    try:
+        summary, pt, ct = summarize_text(OPENAI_API_KEY, OPENAI_MODEL, text)
+        client = get_mongo_client(MONGO_URI)
+        db = client[MONGO_DB]
+        put_summary(db, doc_id, summary, {"model": OPENAI_MODEL, "prompt_tokens": pt, "completion_tokens":ct})
+        set_status(SQLITE_PATH, doc_id, "done", model=OPENAI_MODEL, prompt_tokens=pt, completion_tokens=ct, last_error=None)
+
+    except Exception as e:
+        set_status(SQLITE_PATH, doc_id, "failed", model=OPENAI_MODEL, last_error=str(e)) #Marking the status failed
+    
+@router.post("/docs", response_model=DocCreateResponse, status_code=201)
+async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) -> DocCreateResponse:
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, details="OPEN_API_KEY not set")
+    raw: bytes = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, details=f"File too large(max {MAX_UPLOAD_BYTES}bytes)")
+    
+    mime: str = file.content_type or "application/octet-stream"
+    if mime not in ("text/plain", "text/markdown"):
+        raise HTTPException(statuscode=400, details=f"unsupported mime type{mime}. Use text/plain for now")
+    try:
+        text: str = decode_text(raw)
+    except UniCodeDecodeError:
+        raise HTTPException(statuscode=400, details="File must be UTF-8 encoded text")
+
+    doc_id: str = uuid4().hex
+    filename: str = file.filename or "upload.txt"
+    size: int = int(len(raw))
+    sha256: str = sha256_bytes(raw)
+
+    def mongo_write() -> None: #Write the raw document into mongodb
+        client = get_mongo_client(MONGO_URI)
+        db = client[MONGO_DB]
+        put_raw_doc(db, doc_id, text)
+
+    await anyio.to_thread.run_sync(mongo_write) 
+    """
+    run_sync runs the function in background, so it does not block the async event loop that is this is pushed into the thread_loop
+    In mean the server can handle other requests 
+    anyio.to_thread --> Schedules the function in threadpool worker. 
+    await tells the event loop : I am waiting for the threadppol to complete/finish meantime feel free to run other requests/tasks 
+    """
+    # def mongo_ping() -> None:
+    #     client = get_mongo_client(MONGO_URI)
+    #     client.admin.command("ping")
+    # await anyio.to_thread.run_sync(lambda: mong_ping)
+    await anyio.to_thread.run_sync(
+        lambda: insert_document(
+            SQLITE_PATH,
+            doc_id, 
+            filename,
+            size, 
+            mime, 
+            sha256,
+            "pending",
+            OPENAI_MODEL,
+        )
+    )
+
+    background.add_task(summarize_background, doc_id, text) #in background we can summarize_background(doc_id, text)
+    return DocCreateResponse(id=doc_id, status="pending")
+
+@router.post("/docs/{doc_id}", response_model=DocMetaResponse)
+async def get_doc_meta(doc_id: str) -> DocMetaResponse:
+    raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
+    if not raw:
+        raise HTTPException(status_code=404, details="Document not found")
+
+    return _to_meta(raw)
+
+@router.get("/docs/{doc_id}/summary", response_model=DocSummaryResponse)
+async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
+    raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
+    if not raw:
+        raise HTTPException(status_code=404, details="Document not found")
+
+    status: str = raw["status"]
+    if status == "failed":
+        return JSONResponse(status_code=409, content={"id": doc_id, "status": "failed", "summary": None})
+
+    if status != "done":
+        return JSONResponse(status_code=202, content={"id": doc_id, "status": status, "summary": None})
+    
+    def mongo_read():
+        client = get_mongo_client(MONGO_URI)
+        db = client[MONGO_DB]
+        return get_summary(db, doc_id)
+
+    doc = await anyio.to_thread.run_sync(mongo_read)
+    summary = None if not doc else doc.get("summary")
+    return DocSummaryResponse(id=doc_id, status="done", summary=summary)
+
+@router.get("/docs", response_model=DocListResponse)
+async def list_docs( #GET /docs?page=2&size=10&status=done
+    page: int = Query(1, ge=1), # GET /docs?page=2 (default is greater than 1)
+    size: int = Query(10, ge=1, le=100), # GET /docs?size=20 (default ge than 1 and less than 100)
+    status: Optional[str] = Query(None) #GET /docs?status=done
+) -> DocListResponse:
+    items, total = await anyio.to_thread.run_sync(lambda: list_documents(SQLITE_PATH, page, size, status))
+    return DocListResponse(
+        items=[_to_meta(r) for r in items],
+        total=total, 
+        page=page,
+        size=size, 
+    )
+    
+
+
+
+
+
+
+
+
+

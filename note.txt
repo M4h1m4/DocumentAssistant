@@ -1,0 +1,17 @@
+PrecisBox Demo Note
+
+Context:
+I am building a FastAPI application that accepts a document upload, stores the raw document in MongoDB, stores metadata in SQLite, and generates a summary using an OpenAI model in the background.
+
+Key Goals:
+- Build a clean backend API with proper validation and status tracking.
+- Store raw document content in a NoSQL database (MongoDB).
+- Store metadata and job status in a relational database (SQLite).
+- Generate a 6–10 bullet point summary using OpenAI chat completions.
+- Expose endpoints to fetch metadata, summary, and a paginated document list.
+
+What I want from the summary:
+- Summarize the main objective of the app.
+- Highlight what happens on upload (Mongo + SQLite + background task).
+- Mention the polling endpoints and status lifecycle (pending → processing → done/failed).
+- Keep it short and clear in bullet points.
