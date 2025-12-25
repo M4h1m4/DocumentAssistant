@@ -29,6 +29,8 @@ from .db_mongo import (
     get_summary,
 )
 
+from .queue_worker import enqueue_job
+
 load_dotenv()
 
 router = APIRouter()
@@ -56,80 +58,93 @@ def _to_meta(row: Dict[str, Any]) -> DocMetaResponse:
         model=row["model"],
         prompt_tokens=row.get("prompt_tokens"), 
         completion_tokens=row.get("completion_tokens"),
+        attempts=int(row.get("attempts") or 0),
         last_error=row.get("last_error"),
         created_at=datetime.fromisoformat(row["creaed_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
 
 
-def summarize_background(doc_id: str, text:str) -> None:
-    #FastAPI background task and writes status to sqlite and summary to mongodb
-    set_status(SQLITE_PATH, doc_id, "processing", model=OPENAI_MODEL) #set the status to processing
-    try:
-        summary, pt, ct = summarize_text(OPENAI_API_KEY, OPENAI_MODEL, text)
-        client = get_mongo_client(MONGO_URI)
-        db = client[MONGO_DB]
-        put_summary(db, doc_id, summary, {"model": OPENAI_MODEL, "prompt_tokens": pt, "completion_tokens":ct})
-        set_status(SQLITE_PATH, doc_id, "done", model=OPENAI_MODEL, prompt_tokens=pt, completion_tokens=ct, last_error=None)
+# def summarize_background(doc_id: str, text:str) -> None:
+#     #FastAPI background task and writes status to sqlite and summary to mongodb
+#     set_status(SQLITE_PATH, doc_id, "processing", model=OPENAI_MODEL) #set the status to processing
+#     try:
+#         summary, pt, ct = summarize_text(OPENAI_API_KEY, OPENAI_MODEL, text)
+#         client = get_mongo_client(MONGO_URI)
+#         db = client[MONGO_DB]
+#         put_summary(db, doc_id, summary, {"model": OPENAI_MODEL, "prompt_tokens": pt, "completion_tokens":ct})
+#         set_status(SQLITE_PATH, doc_id, "done", model=OPENAI_MODEL, prompt_tokens=pt, completion_tokens=ct, last_error=None)
 
-    except Exception as e:
-        set_status(SQLITE_PATH, doc_id, "failed", model=OPENAI_MODEL, last_error=str(e)) #Marking the status failed
+#     except Exception as e:
+#         set_status(SQLITE_PATH, doc_id, "failed", model=OPENAI_MODEL, last_error=str(e)) #Marking the status failed
     
 @router.post("/docs", response_model=DocCreateResponse, status_code=201)
 async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) -> DocCreateResponse:
     if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, details="OPEN_API_KEY not set")
+        raise HTTPException(status_code=500, detail="OPEN_API_KEY not set")
     raw: bytes = await file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, details=f"File too large(max {MAX_UPLOAD_BYTES}bytes)")
+        raise HTTPException(status_code=413, detail=f"File too large(max {MAX_UPLOAD_BYTES}bytes)")
     
     mime: str = file.content_type or "application/octet-stream"
     if mime not in ("text/plain", "text/markdown"):
-        raise HTTPException(statuscode=400, details=f"unsupported mime type{mime}. Use text/plain for now")
+        raise HTTPException(status_code=400, detail=f"unsupported mime type{mime}. Use text/plain for now")
     try:
         text: str = decode_text(raw)
     except UniCodeDecodeError:
-        raise HTTPException(statuscode=400, details="File must be UTF-8 encoded text")
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded text")
 
     doc_id: str = uuid4().hex
     filename: str = file.filename or "upload.txt"
     size: int = int(len(raw))
     sha256: str = sha256_bytes(raw)
 
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: insert_document(
+                SQLITE_PATH,
+                doc_id, 
+                filename,
+                size, 
+                mime, 
+                sha256,
+                "pending",
+                OPENAI_MODEL,
+            )
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write metadat{e}")
+
     def mongo_write() -> None: #Write the raw document into mongodb
         client = get_mongo_client(MONGO_URI)
         db = client[MONGO_DB]
         put_raw_doc(db, doc_id, text)
 
-    await anyio.to_thread.run_sync(mongo_write) 
+    try:
+        await anyio.to_thread.run_sync(mongo_write) 
+    except Exception as e:
+        await anyio.to_thread.run_sync(
+            lambda: set_status(
+                SQLITE_PATH,
+                doc_id,
+                "failed",
+                model=OPENAI_MODEL,
+                last_error=f"Mongo write failed{e}",
+            )
+        )
+        raise HTTPException(status_code=500, detail=f"Mongo write failed {e}")
     """
     run_sync runs the function in background, so it does not block the async event loop that is this is pushed into the thread_loop
     In mean the server can handle other requests 
     anyio.to_thread --> Schedules the function in threadpool worker. 
     await tells the event loop : I am waiting for the threadppol to complete/finish meantime feel free to run other requests/tasks 
     """
-    # def mongo_ping() -> None:
-    #     client = get_mongo_client(MONGO_URI)
-    #     client.admin.command("ping")
-    # await anyio.to_thread.run_sync(lambda: mong_ping)
-    await anyio.to_thread.run_sync(
-        lambda: insert_document(
-            SQLITE_PATH,
-            doc_id, 
-            filename,
-            size, 
-            mime, 
-            sha256,
-            "pending",
-            OPENAI_MODEL,
-        )
-    )
-
-    background.add_task(summarize_background, doc_id, text) #in background we can summarize_background(doc_id, text)
+    # background.add_task(summarize_background, doc_id, text) #in background we can summarize_background(doc_id, text)
+    enqueue_job(doc_id)
     return DocCreateResponse(id=doc_id, status="pending")
 
 @router.post("/docs/{doc_id}", response_model=DocMetaResponse)
-async def get_doc_meta(doc_id: str) -> DocMetaResponse:
+async def get_doc(doc_id: str) -> DocMetaResponse:
     raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
     if not raw:
         raise HTTPException(status_code=404, details="Document not found")
@@ -172,12 +187,3 @@ async def list_docs( #GET /docs?page=2&size=10&status=done
         size=size, 
     )
     
-
-
-
-
-
-
-
-
-

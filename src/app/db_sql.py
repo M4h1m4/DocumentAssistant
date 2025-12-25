@@ -32,6 +32,7 @@ def init_db(sqlite_path: str) -> None:
             model       TEXT, 
             prompt_tokens   INTEGER,
             completion_tokens   INTEGER,
+            attempts        INTEGER NOT NULL DEFAULT 0,
             last_error      TEXT,
             created_at      TEXT NOT NULL, 
             updated_at      TEXT NOT NULL
@@ -43,6 +44,9 @@ def init_db(sqlite_path: str) -> None:
         #prompt_tokens to store the no of tokens used by the input file 
         #completion_tokens to store the no of tokens used by the summary generated. 
         #total tokens = prompt_tokens + completion_tokens
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "attempts" not in cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_documents_status ON documents(status);")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_documents_sha256 ON documents(sha256);")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_documents_created_at ON documents(created_at);")
@@ -141,3 +145,40 @@ list_documents returns the a page of rows
 total (rows) count so that the API can show pagination info 
 gets the size rows and skips the offset rows. 
 """
+
+def get_attempts(sqlite_path: str, doc_id: str) -> int:
+    with get_conn(sqlite_path) as conn:
+        row = conn.execute(
+            "SELECT attempts FROM documents WHERE id = ?", 
+            (doc_id,)
+        ).fetchone()
+        if row is None:
+            return 0 
+        return int(row["attempts"] or 0)
+
+def record_failure(sqlite_path: str, doc_id: str, err: str, status: str) -> int:
+    # This function is to increment attempts and update stautus and error 
+    now: str = utcnow_iso()
+    with get_conn(sqlite_path) as conn:
+        conn.execute(
+            """
+            UPDATE documents 
+                SET attempts = COALESCE(attempts, 0) + 1,
+                    last_error = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """,
+            (err[:200], status, now, doc_id),
+        )
+        row = conn.execute("SELECT attempts FROM documents WHERE id =?", (doc_id,)).fetchone()
+        return 0 if row is None else int(row["attempts"] or 0)
+
+def get_doc_meta(sqlite_path: str, doc_id: str) -> Optional[Dict[str, Any]]:
+    with get_conn(sqlite_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id = ?", (doc_id,),
+            ).fetchone()
+        if row is None:
+            return None 
+        return dict(row)

@@ -1,0 +1,22 @@
+Customer Tickets (Excerpt)
+
+Ticket #1823:
+- Upload works but summary returns 202 for too long.
+- User expects a timeout and a clear “failed” state.
+
+Ticket #1840:
+- Duplicate uploads create multiple IDs. User wants deduplication.
+- Suggest using file hash to detect duplicates and reuse summary.
+
+Ticket #1901:
+- Summary quality is inconsistent for bullet-point heavy documents.
+- Request: Use a structured prompt and return 6-10 bullets.
+
+Ticket #1910:
+- User uploaded a PDF and got “unsupported mime type”.
+- Request: Add PDF support.
+
+Priority notes:
+- Improve failure messages and add retries.
+- Add PDF ingestion path.
+- Add basic performance benchmarks.

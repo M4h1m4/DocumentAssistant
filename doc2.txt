@@ -1,0 +1,23 @@
+Team Sync Notes — Monday
+
+Attendees: API, Data, Infra
+Agenda:
+1) Current status
+2) Reliability issues
+3) Next sprint goals
+
+Discussion:
+- API team noticed occasional 500 errors during high upload frequency.
+- Data team wants the summary to include bullet points plus a 1-line TL;DR.
+- Infra team flagged that SQLite is a bottleneck for concurrent writes.
+
+Action items:
+- Add retry logic with max attempts.
+- Add “stuck job” detection for processing > 2 minutes.
+- Add a lightweight load testing script (start with 5 parallel docs).
+- Log timing: upload_time_ms and summary_time_ms.
+
+Decisions:
+- Keep Mongo for raw docs.
+- Keep SQLite for metadata for now.
+- Add better error messages in summary endpoint (409 with last_error).

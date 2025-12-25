@@ -1,0 +1,11 @@
+Small Article: Why Observability Matters
+
+Observability is the ability to understand what is happening inside a system by looking at its outputs such as logs, metrics, and traces. Many systems fail not because of a single bug, but due to complex interactions between components. When a job processing pipeline uses a database, a queue, and an external API, failures can happen at any stage.
+
+Good observability answers:
+- Which stage is slow?
+- Which dependency is failing?
+- How many jobs are stuck?
+- What is the error distribution?
+
+In job systems, tracking status transitions and storing errors alongside attempts is often more valuable than a perfect design on day one.

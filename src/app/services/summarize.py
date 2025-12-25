@@ -2,8 +2,8 @@ from __future__ import annotations
 from typing import Tuple, Optional
 from openai import OpenAI 
 
-def summarize_text(api_key: str, model: str, text: str) -> Tuple[str, Optional[int], Optional[int]]:
-    client = OpenAI(api_key=api_key)
+def summarize_text(api_key: str, model: str, text: str, timeout: float = 120.0) -> Tuple[str, Optional[int], Optional[int]]:
+    client = OpenAI(api_key=api_key, timeout=timeout)
     resp = client.chat.completions.create(
         model = model,
         messages=[
@@ -28,7 +28,7 @@ def summarize_text(api_key: str, model: str, text: str) -> Tuple[str, Optional[i
 
     summary = resp.choices[0].message.content or ""
     usage = resp.usage 
-    prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None 
-    completion_tokens = getattr(usage, "completion_tokens", None) if usage else None 
+    prompt_tokens = int(usage.prompt_tokens) if usage and usage.prompt_tokens else 0
+    completion_tokens = int(usage.completion_tokens) if usage and usage.completion_tokens else 0
     return summary, prompt_tokens, completion_tokens
 

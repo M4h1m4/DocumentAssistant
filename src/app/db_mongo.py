@@ -16,14 +16,19 @@ def put_raw_doc(db, doc_id: str, text: str) -> None:
         upsert=True,
     )
 
-def put_summary(db, doc_id: str, summary: str, summary_meta: Dict[str, Any]) -> None:
+def put_summary(db, doc_id: str, summary: str, prompt_tokens: int, completion_tokens: int) -> None:
     db.docs.update_one(
         {"_id": doc_id},
-        {"$set": {"summary": summary, "summary_meta": summary_meta}},
+        {"$set": {"summary": summary, "summary_meta":{"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}}},
         upsert=False, 
     )
 
 def get_summary(db, doc_id: str) -> Optional[Dict[str, Any]]:
     return db.docs.find_one(
         {"_id":doc_id}, 
-        {"summary": 1, "summary_meta": 1})
+        {"summary": 1, "summary_meta": 1}
+        )
+
+def get_raw_doc(db, doc_id: str) -> Optional[str]:
+    raw = db.docs.find_one({"_id": doc_id}, {"text":1})
+    return None if raw is None else raw.get("text")

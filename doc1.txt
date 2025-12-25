@@ -1,0 +1,23 @@
+PrecisBox PRD (Draft)
+
+Goal: Users upload documents and receive a short, reliable summary. The system stores the original text in a NoSQL store and stores metadata and processing status in a relational store.
+
+Key requirements:
+- Upload endpoint accepts text/markdown and returns an id immediately.
+- Summaries must be available via a separate endpoint.
+- Status should move: pending → processing → done/failed.
+- Include token usage metrics for cost visibility.
+
+Non-functional:
+- Handle 100 concurrent uploads locally without crashing.
+- Provide clear errors and avoid silent failures.
+- Observability: log each state transition and store last_error.
+
+Risks:
+- External LLM rate limits and timeouts.
+- SQLite write contention under concurrency.
+- Large file uploads and memory spikes.
+
+Success metrics:
+- P95 upload latency < 500ms for small docs.
+- Summary available within 10 seconds for typical documents.
