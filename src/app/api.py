@@ -9,10 +9,13 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import anyio
 from .schemas import (
+    ApiError,
+    ApiErrorCode,
     DocCreateResponse,
     DocMetaResponse,
     DocSummaryResponse,
     DocListResponse,
+    DocumentStatus,
 )
 from .services.hashing import sha256_bytes, decode_text
 from .services.summarize import summarize_text
@@ -33,7 +36,7 @@ from .queue_worker import enqueue_job
 
 load_dotenv()
 
-router = APIRouter()
+router = APIRouter(prefix="/docs")
 
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -41,6 +44,11 @@ MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB: str = os.getenv("MONGO_DB", "precisbox")
 SQLITE_PATH: str = os.getenv("SQLITE_PATH","./meta.db")
 MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", "2000000"))
+SUPPORTED_MIME = {"text/plain", "text/markdown"}  
+
+def _err(code: ApiErrorCode, msg: str) -> ApiError:
+    return ApiError(code=code, message=msg)
+
 
 """
 #row["x"] is used for columns that are guaranteed to exist
@@ -63,22 +71,8 @@ def _to_meta(row: Dict[str, Any]) -> DocMetaResponse:
         created_at=datetime.fromisoformat(row["creaed_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
-
-
-# def summarize_background(doc_id: str, text:str) -> None:
-#     #FastAPI background task and writes status to sqlite and summary to mongodb
-#     set_status(SQLITE_PATH, doc_id, "processing", model=OPENAI_MODEL) #set the status to processing
-#     try:
-#         summary, pt, ct = summarize_text(OPENAI_API_KEY, OPENAI_MODEL, text)
-#         client = get_mongo_client(MONGO_URI)
-#         db = client[MONGO_DB]
-#         put_summary(db, doc_id, summary, {"model": OPENAI_MODEL, "prompt_tokens": pt, "completion_tokens":ct})
-#         set_status(SQLITE_PATH, doc_id, "done", model=OPENAI_MODEL, prompt_tokens=pt, completion_tokens=ct, last_error=None)
-
-#     except Exception as e:
-#         set_status(SQLITE_PATH, doc_id, "failed", model=OPENAI_MODEL, last_error=str(e)) #Marking the status failed
     
-@router.post("/docs", response_model=DocCreateResponse, status_code=201)
+@router.post("", response_model=DocCreateResponse, status_code=201)
 async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) -> DocCreateResponse:
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPEN_API_KEY not set")
@@ -143,26 +137,38 @@ async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) 
     enqueue_job(doc_id)
     return DocCreateResponse(id=doc_id, status="pending")
 
-@router.post("/docs/{doc_id}", response_model=DocMetaResponse)
+@router.get("/docs/{doc_id}", response_model=DocMetaResponse)
 async def get_doc(doc_id: str) -> DocMetaResponse:
     raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
     if not raw:
-        raise HTTPException(status_code=404, details="Document not found")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     return _to_meta(raw)
 
-@router.get("/docs/{doc_id}/summary", response_model=DocSummaryResponse)
+@router.get("/{doc_id}/summary", response_model=DocSummaryResponse)
 async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
     raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
     if not raw:
-        raise HTTPException(status_code=404, details="Document not found")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     status: str = raw["status"]
-    if status == "failed":
-        return JSONResponse(status_code=409, content={"id": doc_id, "status": "failed", "summary": None})
+    if status == DocumentStatus.failed.value:
+        body = DocSummaryResponse(
+            id=doc_id, 
+            status=DocSummaryResponse.failed,
+            summary=None, 
+            error=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
+        )
+        return JSONResponse(status_code=409, content=body.model_dump())
 
-    if status != "done":
-        return JSONResponse(status_code=202, content={"id": doc_id, "status": status, "summary": None})
+    if status != DocumentStatus.done.value:
+        body = DocSummaryResponse(
+            id=doc_id,
+            status=DocumentStatus(status),
+            summary=None,
+            error=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
+        )
+        return JSONResponse(status_code=202, content=body.model_dump())
     
     def mongo_read():
         client = get_mongo_client(MONGO_URI)
@@ -171,9 +177,9 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
 
     doc = await anyio.to_thread.run_sync(mongo_read)
     summary = None if not doc else doc.get("summary")
-    return DocSummaryResponse(id=doc_id, status="done", summary=summary)
+    return DocSummaryResponse(id=doc_id, status=DocumentStatus.done, summary=summary, error=None)
 
-@router.get("/docs", response_model=DocListResponse)
+@router.get("", response_model=DocListResponse)
 async def list_docs( #GET /docs?page=2&size=10&status=done
     page: int = Query(1, ge=1), # GET /docs?page=2 (default is greater than 1)
     size: int = Query(10, ge=1, le=100), # GET /docs?size=20 (default ge than 1 and less than 100)
