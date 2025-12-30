@@ -4,10 +4,11 @@ import os
 from uuid import uuid4
 from typing import Tuple, Dict, List, Any, Optional 
 from datetime import datetime 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import anyio
+import logging
 from .schemas import (
     ApiError,
     ApiErrorCode,
@@ -21,19 +22,21 @@ from .services.hashing import sha256_bytes, decode_text
 from .services.summarize import summarize_text
 from .db_sql import (
     insert_document,
-    fetch_documents,
+    fetch_document,
     list_documents,
     set_status,
 )
 from .db_mongo import (
-    get_mongo_client,
-    put_raw_doc,
-    put_summary,
-    get_summary,
+    write_raw_doc,
+    read_summary
 )
 
-from .queue_worker import enqueue_job
+# from .queue_worker import enqueue_job
+from . import queue_worker as qw
 
+
+
+log = logging.getLogger("precisbox.api")
 load_dotenv()
 
 router = APIRouter(prefix="/docs")
@@ -55,31 +58,67 @@ def _err(code: ApiErrorCode, msg: str) -> ApiError:
 #Incase if they don't exists and we still want to continue the application without any error like keyerrors we use row.get("x") cause .get returns null if the key does not exist. 
 Hence we should also define these columns optional in the schemas.py
 """
+
+def _safe_int(val: Any, default: int, field: str, doc_id: str) -> int: 
+    try:
+        if val is None:
+            return default 
+        return int(val)
+    except Exception:
+        log.exception("Invalid %s=%r for doc_id=%s; defaulting to %d", field, val, doc_id, default)
+        return default
+
 def _to_meta(row: Dict[str, Any]) -> DocMetaResponse:
+    doc_id = row["id"]
+    filename = row["filename"]
+    created_at = datetime.fromisoformat(row["created_at"])
+    updated_at = datetime.fromisoformat(row["updated_at"])
+
+    # Defensive
+    size = _safe_int(row.get("size"), 0, "size", doc_id)
+    attempts = _safe_int(row.get("attempts"), 0, "attempts", doc_id)
+
+    mime = row.get("mime") or "application/octet-stream"
+    sha256 = row.get("sha256") or ""
+    status = row.get("status") or "unknown"
+
+    model = row.get("model")
+    prompt_tokens = row.get("prompt_tokens")
+    completion_tokens = row.get("completion_tokens")
+    last_error = row.get("last_error")
+
+    # Optional: log missing non-guaranteed fields
+    for k in ("size", "mime", "sha256", "status"):
+        if k not in row:
+            log.warning("Row missing '%s' for doc_id=%s; using default. keys=%s", k, doc_id, list(row.keys()))
+
     return DocMetaResponse(
-        id=row["id"],
-        filename=row["filename"],
-        size=int(row["size"]),
-        mime=row["mime"],
-        sha256=row["sha256"],
-        status=row["status"],
-        model=row["model"],
-        prompt_tokens=row.get("prompt_tokens"), 
-        completion_tokens=row.get("completion_tokens"),
-        attempts=int(row.get("attempts") or 0),
-        last_error=row.get("last_error"),
-        created_at=datetime.fromisoformat(row["creaed_at"]),
-        updated_at=datetime.fromisoformat(row["updated_at"]),
+        id=str(doc_id),
+        filename=str(filename),
+        size=size,
+        mime=str(mime),
+        sha256=str(sha256),
+        status=status,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        attempts=attempts,
+        last_error=last_error,
+        created_at=created_at,
+        updated_at=updated_at,
     )
     
 @router.post("", response_model=DocCreateResponse, status_code=201)
-async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) -> DocCreateResponse:
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OPEN_API_KEY not set")
+async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreateResponse:
+    # if not OPENAI_API_KEY:
+    #     raise HTTPException(status_code=500, detail="OPEN_API_KEY not set")
+    summarizer_enabled = bool(getattr(request.app.state, "SUMMARIZER_ENABLED", False))
+    if not summarizer_enabled:
+        raise HTTPException(status_code=503, detail="Summarizer disabled (OPENAI_API_KEY missing)")
+
     raw: bytes = await file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File too large(max {MAX_UPLOAD_BYTES}bytes)")
-    
     mime: str = file.content_type or "application/octet-stream"
     if mime not in ("text/plain", "text/markdown"):
         raise HTTPException(status_code=400, detail=f"unsupported mime type{mime}. Use text/plain for now")
@@ -90,6 +129,9 @@ async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) 
 
     doc_id: str = uuid4().hex
     filename: str = file.filename or "upload.txt"
+    original: str = file.filename or "upload.txt"
+    short = doc_id[:8]
+    display_name = f"{original}_{short}"
     size: int = int(len(raw))
     sha256: str = sha256_bytes(raw)
 
@@ -109,13 +151,13 @@ async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write metadat{e}")
 
-    def mongo_write() -> None: #Write the raw document into mongodb
-        client = get_mongo_client(MONGO_URI)
-        db = client[MONGO_DB]
-        put_raw_doc(db, doc_id, text)
+    # def mongo_write() -> None: #Write the raw document into mongodb
+    #     client = get_mongo_client(MONGO_URI)
+    #     db = client[MONGO_DB]
+    #     put_raw_doc(db, doc_id, text)
 
     try:
-        await anyio.to_thread.run_sync(mongo_write) 
+        await anyio.to_thread.run_sync(lambda: write_raw_doc(MONGO_URI, MONGO_DB, doc_id, text)) 
     except Exception as e:
         await anyio.to_thread.run_sync(
             lambda: set_status(
@@ -134,12 +176,12 @@ async def upload_doc(background: BackgroundTasks, file: UploadFile = File(...)) 
     await tells the event loop : I am waiting for the threadppol to complete/finish meantime feel free to run other requests/tasks 
     """
     # background.add_task(summarize_background, doc_id, text) #in background we can summarize_background(doc_id, text)
-    enqueue_job(doc_id)
-    return DocCreateResponse(id=doc_id, status="pending")
+    qw.enqueue_job(doc_id)
+    return DocCreateResponse(id=doc_id, status="pending", display_name=display_name)
 
-@router.get("/docs/{doc_id}", response_model=DocMetaResponse)
+@router.get("/{doc_id}", response_model=DocMetaResponse)
 async def get_doc(doc_id: str) -> DocMetaResponse:
-    raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
+    raw = await anyio.to_thread.run_sync(lambda: fetch_document(SQLITE_PATH, doc_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -147,7 +189,7 @@ async def get_doc(doc_id: str) -> DocMetaResponse:
 
 @router.get("/{doc_id}/summary", response_model=DocSummaryResponse)
 async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
-    raw = await anyio.to_thread.run_sync(lambda: fetch_documents(SQLITE_PATH, doc_id))
+    raw = await anyio.to_thread.run_sync(lambda: fetch_document(SQLITE_PATH, doc_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -170,12 +212,12 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
         )
         return JSONResponse(status_code=202, content=body.model_dump())
     
-    def mongo_read():
-        client = get_mongo_client(MONGO_URI)
-        db = client[MONGO_DB]
-        return get_summary(db, doc_id)
+    # def mongo_read():
+    #     client = get_mongo_client(MONGO_URI)
+    #     db = client[MONGO_DB]
+    #     return get_summary(db, doc_id)
 
-    doc = await anyio.to_thread.run_sync(mongo_read)
+    doc = await anyio.to_thread.run_sync(lambda: read_summary(MONGO_URI, MONGO_DB, doc_id))
     summary = None if not doc else doc.get("summary")
     return DocSummaryResponse(id=doc_id, status=DocumentStatus.done, summary=summary, error=None)
 

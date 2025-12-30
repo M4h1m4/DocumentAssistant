@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from .db_sql import set_status, record_failure, get_attempts, get_doc_meta
 from .db_mongo import get_mongo_client, put_summary, get_raw_doc
 from .services.summarize import summarize_text
+from .schemas import DocumentStatus, ApiErrorCode
 
-log = logging.getLogger("precisbox")
+log = logging.getLogger("precisbox.queue_worker")
 
 
 
@@ -85,8 +86,11 @@ def _worker_loop(index: int, cfg: WorkerConfig) -> None:
                 raise RuntimeError(f"Simulated crash in {label}") 
             _process_one(doc_id, cfg)
         except Exception as e:
-            set_status(cfg.sqlite_path, doc_id, status="failed", last_error=f"Workerloop crashed{e}")
-            # record_failure(cfg.sqlite_path, doc_id, str(e), status="failed")
+            log.exception("worker=%s doc_id=%s crashed in processing", label, doc_id)
+            try: 
+                set_status(cfg.sqlite_path, doc_id, status="failed", last_error=f"Workerloop crashed{e}")
+            except Exception as db_e:
+                log.exception("worker=%s doc_id=%s failed to persist failure status (db error)", label, doc_id,)
         finally:
             job_queue.task_done()
 
@@ -97,10 +101,11 @@ def _process_one(doc_id: str, cfg: WorkerConfig) -> None:
         return 
     last_error: Optional[str] = None
     while True:
-        failures: int = get_attempts(cfg.sqlite_path, doc_id)
+        # failures: int = get_attempts(cfg.sqlite_path, doc_id)
+        failures: int = int(meta.get("attempts") or 0)
         if failures >= cfg.max_retries:
             log.warning("Document %s exceeded max retries (%d)", doc_id, cfg.max_retries)
-            set_status(cfg.sqlite_path, doc_id, status="failed", last_error="retry limit exceeded")
+            set_status(cfg.sqlite_path, doc_id, status=DocumentStatus.failed.value, last_error=ApiErrorCode.RETRY_LIMIT_EXCEEDED.value)
             return
         try:
             log.info("Processing document %s (attempt %d)", doc_id, failures + 1)

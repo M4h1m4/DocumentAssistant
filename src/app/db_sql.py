@@ -97,7 +97,7 @@ def set_status(
             (status, model, prompt_tokens, completion_tokens, last_error, now, doc_id),
         )
 
-def fetch_documents(sqlite_path: str, doc_id: str) -> Optional[Dict[str, Any]]:
+def fetch_document(sqlite_path: str, doc_id: str) -> Optional[Dict[str, Any]]:
     with get_conn(sqlite_path) as conn:
         row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
         return None if row is None else dict(row)

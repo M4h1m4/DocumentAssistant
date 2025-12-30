@@ -2,6 +2,9 @@ from __future__ import annotations
 from typing import Tuple, Optional
 from openai import OpenAI 
 
+class SummarizeError(RuntimeError):
+    pass 
+
 def summarize_text(api_key: str, model: str, text: str, timeout: float = 120.0) -> Tuple[str, Optional[int], Optional[int]]:
     client = OpenAI(api_key=api_key, timeout=timeout)
     resp = client.chat.completions.create(
@@ -25,10 +28,16 @@ def summarize_text(api_key: str, model: str, text: str, timeout: float = 120.0) 
 
     User: gives the specific task + data for this request.
     """
+    if not getattr(resp, "choices", None):
+        raise SummarizeError("OpenAI returned no choices")
 
-    summary = resp.choices[0].message.content or ""
-    usage = resp.usage 
-    prompt_tokens = int(usage.prompt_tokens) if usage and usage.prompt_tokens else 0
-    completion_tokens = int(usage.completion_tokens) if usage and usage.completion_tokens else 0
-    return summary, prompt_tokens, completion_tokens
+    msg = resp.choices[0].message
+    content = (msg.content or "").strip() if msg else ""
+    if not content:
+        # could be refusal, empty output, or other non-server failure
+        raise SummarizeError("OpenAI returned empty summary (possible refusal or truncated output)")
+    usage = getattr(resp, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens",0)) if usage else 0
+    completion_tokens = int(getattr(usage, "completion_tokens",0)) if usage else 0
+    return content, prompt_tokens, completion_tokens
 

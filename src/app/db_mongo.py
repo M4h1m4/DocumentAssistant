@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pymongo import MongoClient
 from typing import Optional, Dict, Any
+from pymongo.database import Database
 
 def get_mongo_client(mongo_uri: str) -> MongoClient:
     return MongoClient(mongo_uri)
@@ -32,3 +33,24 @@ def get_summary(db, doc_id: str) -> Optional[Dict[str, Any]]:
 def get_raw_doc(db, doc_id: str) -> Optional[str]:
     raw = db.docs.find_one({"_id": doc_id}, {"text":1})
     return None if raw is None else raw.get("text")
+
+def write_raw_doc(mongo_uri: str, mongo_db: str, doc_id: str, text: str) -> None:
+    client = get_mongo_client(mongo_uri)
+    db = client[mongo_db]
+    put_raw_doc(db, doc_id, text)
+
+def read_raw_doc(mongo_uri: str, mongo_db:str, doc_id: str) -> Optional[str]:
+    client = get_mongo_client(mongo_uri)
+    db = client[mongo_db]
+    get_raw_doc(db, doc_id)
+
+def write_summary(mongo_uri: str, mongo_db: str, doc_id: str, summary:str, prompt_tokens: int, completion_tokens:str) -> None:
+    client = get_mongo_client(mongo_uri)
+    db = client(mongo_db)
+    put_summary(db, doc_id, summary, prompt_tokens, completion_tokens)
+
+
+def read_summary(mongo_uri: str, mongo_db: str, doc_id: str) -> Optional[Dict[str, Any]]:
+    client = get_mongo_client(mongo_uri)
+    db = client[mongo_db]
+    return get_summary(db, doc_id)

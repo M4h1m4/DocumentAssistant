@@ -7,6 +7,7 @@ from enum import Enum
 class DocCreateResponse(BaseModel):
     id: str
     status: DocumentStatus
+    display_name: str
 
 class DocMetaResponse(BaseModel):
     id: str
@@ -35,12 +36,12 @@ class DocListResponse(BaseModel):
     size: int 
 
 class DocumentStatus(str, Enum):
-    pending: str ="pending"
-    processing: str="processing"
-    done: str="done"
-    failed:str="failed"
+    pending ="pending"
+    processing ="processing"
+    done = "done"
+    failed = "failed"
 
-class ApiErrorCode(BaseModel):
+class ApiErrorCode(str, Enum):
     NOT_FOUND: str = "NOT_FOUND"
     UNSUPPORTED_MIME: str= "UNSUPPORTED_MIME"
     FILE_TOO_LARGE :str= "FILE_TOO_LARGE"
@@ -49,6 +50,7 @@ class ApiErrorCode(BaseModel):
     SUMMARY_NOT_READY :str = "SUMMARY_NOT_READY"
     SUMMARY_FAILED :str = "SUMMARY_FAILED"
     SERVER_MISCONFIG :str = "SERVER_MISCONFIG"
+    RETRY_LIMIT_EXCEEDED = "RETRY_LIMIT_EXCEEDED"
 
 class ApiError(BaseModel):
     code: ApiErrorCode
