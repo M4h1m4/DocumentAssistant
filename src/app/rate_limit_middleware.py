@@ -6,14 +6,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # from starlette.responses import JSONResponse, Response
 from fastapi.responses import JSONResponse
 
-from .rate_limit import TokenBucketLimiter
-
+# from .rate_limit import TokenBucketLimiter
+from .rate_limit_redis import RedisTokenBucketLimiter
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app,
-        limiter: TokenBucketLimiter,
+        limiter: RedisTokenBucketLimiter,
         upload_limit_per_min: int,
         summary_limit_per_min: int,
         header_user_id: str = "X-User-Id",
@@ -37,19 +37,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         is_summary = (method == "GET" and path.endswith("/summary"))
 
         if not (is_upload or is_summary):
-            return await call_next(request)   # IMPORTANT RETURN
+            return await call_next(request) 
 
-        user_id = request.headers.get(self.header_user_id, "").strip()
+        header_val = request.headers.get(self.header_user_id, "").strip()
+        user_id = self.limiter.resolve_user_id(header_val)
         if not user_id:
             # No auth: either treat as anonymous bucket or reject.
-            user_id = "anonymous"
+            # user_id = "anonymous"
+            return JSONResponse(
+                status_code = 401,
+                content={"detail": "missing or unknown user"},
+            )
 
         endpoint_key = "upload" if is_upload else "summary"
         refill = self.upload_limit_per_min if is_upload else self.summary_limit_per_min
 
         allowed, retry_after = self.limiter.check(
             user_id=user_id,
-            endpoint=endpoint_key,
+            end_point=endpoint_key,
             capacity=refill,            # bucket size == per-minute allowance
             refill_per_min=refill,
             amount=1.0,
@@ -57,7 +62,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not allowed:
             secs = max(1, int(math.ceil(retry_after)))
-            return JSONResponse(          # IMPORTANT RETURN
+            return JSONResponse(          
                 status_code=429,
                 content={
                     "detail": "rate_limited",
@@ -68,4 +73,4 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(secs)},
             )
 
-        return await call_next(request)    # IMPORTANT RETURN
+        return await call_next(request)    

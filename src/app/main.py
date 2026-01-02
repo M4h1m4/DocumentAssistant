@@ -6,11 +6,13 @@ from .rate_limit import TokenBucketLimiter
 import math
 from dotenv import load_dotenv
 import logging 
+import redis
 
 from .api import router 
 from .db_sql import init_db
 from .queue_worker import start_workers, WorkerConfig, _worker_loop
 from .rate_limit import TokenBucketLimiter
+from .rate_limit_redis import RedisTokenBucketLimiter
 from .rate_limit_middleware import RateLimitMiddleware
 
 load_dotenv() 
@@ -32,18 +34,26 @@ CRASH_P: float = float(os.getenv("CRASH_P", "0.0"))
 OPENAI_TIMEOUT: float = float(os.getenv("OPENAI_TIMEOUT", "120.0"))
 
 # Rate limit knobs
-UPLOAD_PER_MIN = int(os.getenv("RL_UPLOAD_PER_MIN", "1"))
-SUMMARY_PER_MIN = int(os.getenv("RL_SUMMARY_PER_MIN", "2"))
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+UPLOAD_PER_MIN = int(os.getenv("UPLOAD_PER_MIN", "1"))
+SUMMARY_PER_MIN = int(os.getenv("SUMMARY_PER_MIN", "2"))
 
 app = FastAPI(title="PrecisBox")
-limiter = TokenBucketLimiter()
+app.include_router(router)
+
+
+r=redis.Redis.from_url(REDIS_URL, decode_responses=True)
+limiter = RedisTokenBucketLimiter(
+    redis_client=r, 
+    enforce_known_user=False,
+)
+
 app.add_middleware(
     RateLimitMiddleware,
     limiter=limiter,
     upload_limit_per_min=UPLOAD_PER_MIN,
     summary_limit_per_min=SUMMARY_PER_MIN,
 )
-app.include_router(router)
 
 
 @app.on_event("startup")
