@@ -84,6 +84,34 @@ Once running, visit:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
+## Testing
+
+See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions.
+
+### Quick Test
+
+1. **Health Check:**
+```bash
+curl http://localhost:8000/healthz
+```
+
+2. **Upload a Document:**
+```bash
+curl -X POST http://localhost:8000/docs \
+  -H "X-User-Id: test-user" \
+  -F "file=@doc1.txt"
+```
+
+3. **Get Document Summary:**
+```bash
+curl http://localhost:8000/docs/<doc_id>/summary \
+  -H "X-User-Id: test-user"
+```
+
+**Note**: Rate limiting requires the `X-User-Id` header. Default limits:
+- Upload: 1 per minute
+- Summary: 2 per minute
+
 ## Project Structure
 
 ```
