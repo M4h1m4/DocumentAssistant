@@ -13,3 +13,8 @@ wheels/
 .env
 src/.env.example
 src/.env
+
+# SQLite / local DB files
+meta.db
+meta.db-shm
+meta.db-wal

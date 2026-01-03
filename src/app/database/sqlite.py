@@ -56,7 +56,7 @@ def insert_document(
     sqlite_path: str, 
     doc_id: str,
     filename: str, 
-    size: str,
+    size: int,
     mime: str, 
     sha256: str, 
     status: str, 
@@ -123,7 +123,7 @@ def list_documents(
                 SELECT * FROM documents
                     WHERE status = ?
                     ORDER BY created_at DESC
-                    LIMIT ? OFFSET = ?
+                    LIMIT ? OFFSET ?
                 """,
                 (status, size, offset)
             ).fetchall()
@@ -138,10 +138,10 @@ def list_documents(
                 """,
                 (size, offset),
             ).fetchall()
-        return [dict[r] for r in rows], total
+        return [dict(r) for r in rows], total
 
 """
-list_documents returns the a page of rows
+list_documents returns a page of rows
 total (rows) count so that the API can show pagination info 
 gets the size rows and skips the offset rows. 
 """
@@ -157,7 +157,7 @@ def get_attempts(sqlite_path: str, doc_id: str) -> int:
         return int(row["attempts"] or 0)
 
 def record_failure(sqlite_path: str, doc_id: str, err: str, status: str) -> int:
-    # This function is to increment attempts and update stautus and error 
+    # This function is to increment attempts and update status and error 
     now: str = utcnow_iso()
     with get_conn(sqlite_path) as conn:
         conn.execute(

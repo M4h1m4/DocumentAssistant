@@ -42,11 +42,11 @@ def write_raw_doc(mongo_uri: str, mongo_db: str, doc_id: str, text: str) -> None
 def read_raw_doc(mongo_uri: str, mongo_db:str, doc_id: str) -> Optional[str]:
     client = get_mongo_client(mongo_uri)
     db = client[mongo_db]
-    get_raw_doc(db, doc_id)
+    return get_raw_doc(db, doc_id)
 
 def write_summary(mongo_uri: str, mongo_db: str, doc_id: str, summary:str, prompt_tokens: int, completion_tokens:str) -> None:
     client = get_mongo_client(mongo_uri)
-    db = client(mongo_db)
+    db = client[mongo_db]
     put_summary(db, doc_id, summary, prompt_tokens, completion_tokens)
 
 

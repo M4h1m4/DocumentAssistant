@@ -1,48 +1,22 @@
-import os
-from fastapi import FastAPI, Request, status 
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import FastAPI
 from starlette.responses import JSONResponse
-from .rate_limit import TokenBucketLimiter
-import math
-from dotenv import load_dotenv
 import logging 
 import redis
 
+from .config import settings
 from .api import router 
-from .db_sql import init_db
-from .queue_worker import start_workers, WorkerConfig, _worker_loop
-from .rate_limit import TokenBucketLimiter
-from .rate_limit_redis import RedisTokenBucketLimiter
-from .rate_limit_middleware import RateLimitMiddleware
+from .database.sqlite import init_db
+from .queue.redis_queue_worker import start_worker, workerconfig
+from .middleware.rate_limit_redis import RedisTokenBucketLimiter
+from .middleware.rate_limit_middleware import RateLimitMiddleware
 
-load_dotenv() 
- 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("precisbox.main")
-
-SQLITE_PATH: str= os.getenv("SQLITE_PATH", "./meta.db")
-MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB: str = os.getenv("MONGO_DB", "precisbox")
-
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-WORKERS: int = int(os.getenv("WORKERS", "1"))
-MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "2"))
-RETRY_BACKOFF_SEC: float = float(os.getenv("RETRY_BACKOFF", "0.5"))
-CRASH_P: float = float(os.getenv("CRASH_P", "0.0"))
-OPENAI_TIMEOUT: float = float(os.getenv("OPENAI_TIMEOUT", "120.0"))
-
-# Rate limit knobs
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-UPLOAD_PER_MIN = int(os.getenv("UPLOAD_PER_MIN", "1"))
-SUMMARY_PER_MIN = int(os.getenv("SUMMARY_PER_MIN", "2"))
 
 app = FastAPI(title="PrecisBox")
 app.include_router(router)
 
-
-r=redis.Redis.from_url(REDIS_URL, decode_responses=True)
+r = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 limiter = RedisTokenBucketLimiter(
     redis_client=r, 
     enforce_known_user=False,
@@ -51,40 +25,39 @@ limiter = RedisTokenBucketLimiter(
 app.add_middleware(
     RateLimitMiddleware,
     limiter=limiter,
-    upload_limit_per_min=UPLOAD_PER_MIN,
-    summary_limit_per_min=SUMMARY_PER_MIN,
+    upload_limit_per_min=settings.upload_per_min,
+    summary_limit_per_min=settings.summary_per_min,
 )
 
 
 @app.on_event("startup")
 def _startup() -> None:
     # Create/migrate SQLite schema
-    init_db(SQLITE_PATH)
-    log.info("init_db ok (%s)", SQLITE_PATH)
+    init_db(settings.sqlite_path)
+    log.info("init_db ok (%s)", settings.sqlite_path)
 
-    summarizer_enabled = bool(OPENAI_API_KEY)
+    summarizer_enabled = bool(settings.openai_api_key)
     app.state.SUMMARIZER_ENABLED = summarizer_enabled
     if summarizer_enabled:
-        log.info("summarizer enabled (model=%s)", OPENAI_MODEL)
+        log.info("summarizer enabled (model=%s)", settings.openai_model)
     else:
         # App can still run (uploads/metadata), but summarization should be treated as unavailable.
         log.warning("OPENAI_API_KEY missing -> summarizer disabled")
 
     # Start queue worker threads
-    cfg = WorkerConfig(
-        sqlite_path=SQLITE_PATH,
-        mongo_uri=MONGO_URI,
-        mongo_db=MONGO_DB,
-        openai_api_key=OPENAI_API_KEY,
-        openai_model=OPENAI_MODEL,
-        workers=WORKERS,
-        max_retries=MAX_RETRIES,
-        retry_backoff=RETRY_BACKOFF_SEC,
-        crash_p=CRASH_P,
-        openai_timeout=OPENAI_TIMEOUT,
+    cfg = workerconfig(
+        sqlite_path=settings.sqlite_path,
+        mongo_uri=settings.mongo_uri,
+        mongo_db=settings.mongo_db,
+        openai_api_key=settings.openai_api_key,
+        openai_model=settings.openai_model,
+        workers=settings.workers,
+        max_retries=settings.max_retries,
+        retry_backoff=settings.retry_backoff,
+        openai_timeout=settings.openai_timeout,
     )
-    start_workers(cfg)
-    log.info("workers started (n=%d)", WORKERS)
+    start_worker(cfg)
+    log.info("workers started (n=%d)", settings.workers)
 
 @app.get("/healthz")
 def healthz() -> dict:

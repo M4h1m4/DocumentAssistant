@@ -9,9 +9,10 @@ import redis
 
 
 from .redis_queue import get_redis, ensure_group, read_job, ack_job, enqueue_job
-from .db_sql import record_failure, set_status, get_doc_meta
-from .db_mongo import get_mongo_client, get_raw_doc, put_summary
-from .servcies.summarize import summarize_text
+from ..database.sqlite import record_failure, set_status, get_doc_meta
+from ..database.mongo import get_mongo_client, get_raw_doc, put_summary
+from ..services.summarize import summarize_text
+from ..schemas import DocumentStatus
 
 log = logging.getLogger("precisbox.redis_worker")
 
@@ -48,7 +49,7 @@ def start_worker(cfg: workerconfig) -> None:
             name=f"precisbox-redis-worker-{i+1}",
         )
         t.start()
-        _thread.append(t)
+        _threads.append(t)
     log.info("Redis workers started (n=%d)", cfg.workers)
 
 def stop_workers() -> None:
@@ -93,7 +94,7 @@ def _worker_loop(cfg: workerconfig, consumer: str) -> None:
 def _process_one(cfg: workerconfig, doc_id: str) -> None:
     meta = get_doc_meta(cfg.sqlite_path, doc_id)
     if meta is None:
-        raise RuntimeError(f"doc_id is not found in SQLite{doc_id}")
+        raise RuntimeError(f"doc_id is not found in SQLite: {doc_id}")
 
     # failures = int(meta.get("attempts") or 0) 
     # if failures >= cfg.max_retries:
@@ -105,7 +106,7 @@ def _process_one(cfg: workerconfig, doc_id: str) -> None:
     #         last_error=ApiErrorCode.RETRY_LIMIT_EXCEEDED.value,  # optional if you store codes
     #     )
     #     return
-    log.info("Processing document %s (attempt %d)", doc_id, failures + 1)
+    # log.info("Processing document %s (attempt %d)", doc_id, failures + 1)
     set_status(cfg.sqlite_path, doc_id, status=DocumentStatus.processing.value, model=cfg.openai_model)
     client = get_mongo_client(cfg.mongo_uri)
     db = client[cfg.mongo_db]

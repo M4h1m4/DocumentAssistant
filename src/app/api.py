@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import os 
 from uuid import uuid4
 from typing import Tuple, Dict, List, Any, Optional 
 from datetime import datetime 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
 import anyio
 import logging
+from .config import settings
 from .schemas import (
     ApiError,
     ApiErrorCode,
@@ -19,34 +18,21 @@ from .schemas import (
     DocumentStatus,
 )
 from .services.hashing import sha256_bytes, decode_text
-from .services.summarize import summarize_text
-from .db_sql import (
+from .database.sqlite import (
     insert_document,
     fetch_document,
     list_documents,
     set_status,
 )
-from .db_mongo import (
+from .database.mongo import (
     write_raw_doc,
     read_summary
 )
-
-# from .queue_worker import enqueue_job
-from . import queue_worker as qw
-
-
+from .queue.redis_queue import get_redis, enqueue_job
 
 log = logging.getLogger("precisbox.api")
-load_dotenv()
-
 router = APIRouter(prefix="/docs")
 
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB: str = os.getenv("MONGO_DB", "precisbox")
-SQLITE_PATH: str = os.getenv("SQLITE_PATH","./meta.db")
-MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", "2000000"))
 SUPPORTED_MIME = {"text/plain", "text/markdown"}  
 
 def _err(code: ApiErrorCode, msg: str) -> ApiError:
@@ -117,14 +103,14 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
         raise HTTPException(status_code=503, detail="Summarizer disabled (OPENAI_API_KEY missing)")
 
     raw: bytes = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"File too large(max {MAX_UPLOAD_BYTES}bytes)")
+    if len(raw) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail=f"File too large(max {settings.max_upload_bytes}bytes)")
     mime: str = file.content_type or "application/octet-stream"
     if mime not in ("text/plain", "text/markdown"):
         raise HTTPException(status_code=400, detail=f"unsupported mime type{mime}. Use text/plain for now")
     try:
         text: str = decode_text(raw)
-    except UniCodeDecodeError:
+    except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded text")
 
     doc_id: str = uuid4().hex
@@ -138,18 +124,18 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
     try:
         await anyio.to_thread.run_sync(
             lambda: insert_document(
-                SQLITE_PATH,
+                settings.sqlite_path,
                 doc_id, 
                 filename,
                 size, 
                 mime, 
                 sha256,
                 "pending",
-                OPENAI_MODEL,
+                settings.openai_model,
             )
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write metadat{e}")
+        raise HTTPException(status_code=500, detail=f"Failed to write metadata")
 
     # def mongo_write() -> None: #Write the raw document into mongodb
     #     client = get_mongo_client(MONGO_URI)
@@ -157,15 +143,15 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
     #     put_raw_doc(db, doc_id, text)
 
     try:
-        await anyio.to_thread.run_sync(lambda: write_raw_doc(MONGO_URI, MONGO_DB, doc_id, text)) 
+        await anyio.to_thread.run_sync(lambda: write_raw_doc(settings.mongo_uri, settings.mongo_db, doc_id, text)) 
     except Exception as e:
         await anyio.to_thread.run_sync(
             lambda: set_status(
-                SQLITE_PATH,
+                settings.sqlite_path,
                 doc_id,
                 "failed",
-                model=OPENAI_MODEL,
-                last_error=f"Mongo write failed{e}",
+                model=settings.openai_model,
+                last_error=f"Mongo write failed {e}",
             )
         )
         raise HTTPException(status_code=500, detail=f"Mongo write failed {e}")
@@ -175,13 +161,14 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
     anyio.to_thread --> Schedules the function in threadpool worker. 
     await tells the event loop : I am waiting for the threadppol to complete/finish meantime feel free to run other requests/tasks 
     """
-    # background.add_task(summarize_background, doc_id, text) #in background we can summarize_background(doc_id, text)
-    qw.enqueue_job(doc_id)
+    # Enqueue job in Redis queue for background processing
+    r = get_redis()
+    enqueue_job(r, doc_id)
     return DocCreateResponse(id=doc_id, status="pending", display_name=display_name)
 
 @router.get("/{doc_id}", response_model=DocMetaResponse)
 async def get_doc(doc_id: str) -> DocMetaResponse:
-    raw = await anyio.to_thread.run_sync(lambda: fetch_document(SQLITE_PATH, doc_id))
+    raw = await anyio.to_thread.run_sync(lambda: fetch_document(settings.sqlite_path, doc_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -189,7 +176,7 @@ async def get_doc(doc_id: str) -> DocMetaResponse:
 
 @router.get("/{doc_id}/summary", response_model=DocSummaryResponse)
 async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
-    raw = await anyio.to_thread.run_sync(lambda: fetch_document(SQLITE_PATH, doc_id))
+    raw = await anyio.to_thread.run_sync(lambda: fetch_document(settings.sqlite_path, doc_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -197,9 +184,9 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
     if status == DocumentStatus.failed.value:
         body = DocSummaryResponse(
             id=doc_id, 
-            status=DocSummaryResponse.failed,
+            status=DocumentStatus.failed,
             summary=None, 
-            error=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
+            err=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
         )
         return JSONResponse(status_code=409, content=body.model_dump())
 
@@ -208,18 +195,13 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
             id=doc_id,
             status=DocumentStatus(status),
             summary=None,
-            error=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
+            err=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
         )
         return JSONResponse(status_code=202, content=body.model_dump())
     
-    # def mongo_read():
-    #     client = get_mongo_client(MONGO_URI)
-    #     db = client[MONGO_DB]
-    #     return get_summary(db, doc_id)
-
-    doc = await anyio.to_thread.run_sync(lambda: read_summary(MONGO_URI, MONGO_DB, doc_id))
+    doc = await anyio.to_thread.run_sync(lambda: read_summary(settings.mongo_uri, settings.mongo_db, doc_id))
     summary = None if not doc else doc.get("summary")
-    return DocSummaryResponse(id=doc_id, status=DocumentStatus.done, summary=summary, error=None)
+    return DocSummaryResponse(id=doc_id, status=DocumentStatus.done, summary=summary, err=None)
 
 @router.get("", response_model=DocListResponse)
 async def list_docs( #GET /docs?page=2&size=10&status=done
@@ -227,7 +209,7 @@ async def list_docs( #GET /docs?page=2&size=10&status=done
     size: int = Query(10, ge=1, le=100), # GET /docs?size=20 (default ge than 1 and less than 100)
     status: Optional[str] = Query(None) #GET /docs?status=done
 ) -> DocListResponse:
-    items, total = await anyio.to_thread.run_sync(lambda: list_documents(SQLITE_PATH, page, size, status))
+    items, total = await anyio.to_thread.run_sync(lambda: list_documents(settings.sqlite_path, page, size, status))
     return DocListResponse(
         items=[_to_meta(r) for r in items],
         total=total, 
