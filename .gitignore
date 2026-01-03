@@ -18,3 +18,5 @@ src/.env
 meta.db
 meta.db-shm
 meta.db-wal
+
+.txt
