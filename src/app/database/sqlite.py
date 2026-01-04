@@ -1,7 +1,8 @@
 from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
-from typing import Optional, Tuple, List, Dict, Any 
+from typing import Optional, Tuple, List, Dict, Any, Union 
+from ..schemas import DocumentStatus
 
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -59,7 +60,7 @@ def insert_document(
     size: int,
     mime: str, 
     sha256: str, 
-    status: str, 
+    status: Union[DocumentStatus, str], 
     model: Optional[str],
 ) -> None:
     now = utcnow_iso()
@@ -75,7 +76,7 @@ def insert_document(
 def set_status(
     sqlite_path: str, 
     doc_id: str, 
-    status: str, 
+    status: Union[DocumentStatus, str], 
     model: Optional[str] = None, 
     prompt_tokens: Optional[str] = None, 
     completion_tokens: Optional[str] = None, 
@@ -106,7 +107,7 @@ def list_documents(
     sqlite_path: str, 
     page: int, 
     size: int, 
-    status: Optional[str] = None,
+    status: Optional[Union[DocumentStatus, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     #To paginate documents. Optional filter by status 
     offset = (page-1)*size
@@ -156,7 +157,7 @@ def get_attempts(sqlite_path: str, doc_id: str) -> int:
             return 0 
         return int(row["attempts"] or 0)
 
-def record_failure(sqlite_path: str, doc_id: str, err: str, status: str) -> int:
+def record_failure(sqlite_path: str, doc_id: str, err: str, status: Union[DocumentStatus, str]) -> int:
     # This function is to increment attempts and update status and error 
     now: str = utcnow_iso()
     with get_conn(sqlite_path) as conn:

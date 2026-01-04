@@ -11,8 +11,10 @@ dependencies = [
     "pymongo>=4.15.3",
     "pypdf2>=3.0.1",
     "python-dotenv>=1.2.1",
+    "python-json-logger>=4.0.0",
     "python-multipart>=0.0.20",
     "redis>=7.1.0",
     "sqlalchemy>=2.0.44",
+    "structlog>=25.5.0",
     "uvicorn[standard]>=0.38.0",
 ]

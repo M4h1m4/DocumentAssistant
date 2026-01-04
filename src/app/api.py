@@ -6,14 +6,13 @@ from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import JSONResponse
 import anyio
-import logging
 from .config import settings, Defaults
 from .schemas import (
     ApiError,
     ApiErrorCode,
     DocCreateResponse,
     DocMetaResponse,
-    DocSummaryResponse,
+    DocSummary,
     DocListResponse,
     DocumentStatus,
 )
@@ -31,7 +30,10 @@ from .database.mongo import (
 from .queue.redis_queue import get_redis, enqueue_job
 from .utils import safe_int
 
-log = logging.getLogger("precisbox.api")
+from ..logging_config import get_logger
+
+log = get_logger("precisbox.api")
+
 router = APIRouter(prefix="/docs")
 
 SUPPORTED_MIME = {"text/plain", "text/markdown"}  
@@ -119,7 +121,7 @@ async def upload_doc(file: UploadFile = File(...)) -> DocCreateResponse:
                 size, 
                 mime, 
                 sha256,
-                DocumentStatus.pending.value,
+                DocumentStatus.PENDING,
                 settings.openai_model,
             )
         )
@@ -155,7 +157,7 @@ async def upload_doc(file: UploadFile = File(...)) -> DocCreateResponse:
     # Enqueue job in Redis queue for background processing
     r = get_redis()
     enqueue_job(r, doc_id)
-    return DocCreateResponse(id=doc_id, status=DocumentStatus.pending, display_name=display_name)
+    return DocCreateResponse(id=doc_id, status=DocumentStatus.PENDING, display_name=display_name)
 
 @router.get("/{doc_id}", response_model=DocMetaResponse)
 async def get_doc(doc_id: str) -> DocMetaResponse:
@@ -165,24 +167,24 @@ async def get_doc(doc_id: str) -> DocMetaResponse:
 
     return build_doc_meta_response(raw)
 
-@router.get("/{doc_id}/summary", response_model=DocSummaryResponse)
-async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
+@router.get("/{doc_id}/summary", response_model=DocSummary)
+async def get_doc_summary(doc_id: str) -> DocSummary:
     raw = await anyio.to_thread.run_sync(lambda: fetch_document(settings.sqlite_path, doc_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
     status = DocumentStatus(raw["status"])
-    if status == DocumentStatus.failed:
-        body = DocSummaryResponse(
+    if status == DocumentStatus.FAILED:
+        body = DocSummary(
             id=doc_id, 
-            status=DocumentStatus.failed,
+            status=DocumentStatus.FAILED,
             summary=None, 
             err=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
         )
         return JSONResponse(status_code=409, content=body.model_dump())
 
-    if status != DocumentStatus.done:
-        body = DocSummaryResponse(
+    if status != DocumentStatus.DONE:
+        body = DocSummary(
             id=doc_id,
             status=status,
             summary=None,
@@ -194,7 +196,7 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
     summary = None if not doc else doc.get("summary")
     if summary is None:
         log.warning("Summary is None for doc_id=%s despite status=done. doc=%s", doc_id, doc)
-    return DocSummaryResponse(id=doc_id, status=DocumentStatus.done, summary=summary, err=None)
+    return DocSummary(id=doc_id, status=DocumentStatus.DONE, summary=summary, err=None)
 
 @router.get("", response_model=DocListResponse)
 async def list_docs( #GET /docs?page=2&size=10&status=done

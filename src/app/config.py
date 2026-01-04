@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     
     # Upload
     max_upload_bytes: int = Field(default=2000000, ge=1)
+    mongo_max_pool_size: int = Field(default=10, ge=1)
+    mongo_min_pool_size: int = Field(default=1, ge=0)
     
     @property
     def is_summarizer_enabled(self) -> bool:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time 
-import logging
+
 from dataclasses import dataclass
 from typing import Optional 
 import redis 
@@ -14,7 +14,8 @@ from ..database.mongo import get_mongo_client, get_raw_doc, put_summary
 from ..services.summarize import summarize_text
 from ..schemas import DocumentStatus
 
-log = logging.getLogger("precisbox.redis_worker")
+from ..logging_config import get_logger
+log = get_logger("precisbox.redis_worker")
 
 
 @dataclass(frozen=True)
@@ -76,13 +77,13 @@ def _worker_loop(cfg: workerconfig, consumer: str) -> None:
                 cfg.sqlite_path,
                 doc_id, 
                 err=str(e),
-                status=DocumentStatus.pending.value if hasattr(DocumentStatus, "pending") else "pending",
+                status=DocumentStatus.PENDING if hasattr(DocumentStatus, "pending") else "pending",
             )
             if new_attempts >= cfg.max_retries: 
                 set_status(
                     cfg.sqlite_path,
                     doc_id, 
-                      DocumentStatus.failed.value if hasattr(DocumentStatus, "failed") else "failed",
+                      DocumentStatus.FAILED if hasattr(DocumentStatus, "failed") else "failed",
                       last_error = str(e),
                 )
                 ack_job(r, msg_id)
@@ -107,7 +108,7 @@ def _process_one(cfg: workerconfig, doc_id: str) -> None:
     #     )
     #     return
     # log.info("Processing document %s (attempt %d)", doc_id, failures + 1)
-    set_status(cfg.sqlite_path, doc_id, status=DocumentStatus.processing.value, model=cfg.openai_model)
+    set_status(cfg.sqlite_path, doc_id, status=DocumentStatus.PROCESSING, model=cfg.openai_model)
     client = get_mongo_client(cfg.mongo_uri)
     db = client[cfg.mongo_db]
     text: Optional[str] = get_raw_doc(db, doc_id)
@@ -129,7 +130,7 @@ def _process_one(cfg: workerconfig, doc_id: str) -> None:
     set_status(
         cfg.sqlite_path,
         doc_id,
-        status=DocumentStatus.done.value,
+        status=DocumentStatus.DONE,
         model=cfg.openai_model,
         prompt_tokens=prompt_tokens or 0,
         completion_tokens=completion_tokens or 0,

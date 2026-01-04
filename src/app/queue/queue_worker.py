@@ -105,7 +105,7 @@ def _process_one(doc_id: str, cfg: WorkerConfig) -> None:
         failures: int = int(meta.get("attempts") or 0)
         if failures >= cfg.max_retries:
             log.warning("Document %s exceeded max retries (%d)", doc_id, cfg.max_retries)
-            set_status(cfg.sqlite_path, doc_id, status=DocumentStatus.failed.value, last_error=ApiErrorCode.RETRY_LIMIT_EXCEEDED.value)
+            set_status(cfg.sqlite_path, doc_id, status=DocumentStatus.FAILED, last_error=ApiErrorCode.RETRY_LIMIT_EXCEEDED.value)
             return
         try:
             log.info("Processing document %s (attempt %d)", doc_id, failures + 1)

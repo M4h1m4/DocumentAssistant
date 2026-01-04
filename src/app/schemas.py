@@ -23,7 +23,7 @@ class DocMetaResponse(BaseModel):
     created_at: datetime 
     updated_at: datetime 
 
-class DocSummaryResponse(BaseModel):
+class DocSummary(BaseModel):
     id: str
     status: DocumentStatus
     summary: Optional[str] = None 
@@ -36,10 +36,10 @@ class DocListResponse(BaseModel):
     size: int 
 
 class DocumentStatus(str, Enum):
-    pending ="pending"
-    processing ="processing"
-    done = "done"
-    failed = "failed"
+    PENDING ="pending"
+    PROCESSING ="processing"
+    DONE = "done"
+    FAILED = "failed"
 
 class ApiErrorCode(str, Enum):
     NOT_FOUND: str = "NOT_FOUND"

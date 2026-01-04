@@ -3,8 +3,42 @@ from pymongo import MongoClient
 from typing import Optional, Dict, Any
 from pymongo.database import Database
 
-def get_mongo_client(mongo_uri: str) -> MongoClient:
-    return MongoClient(mongo_uri)
+
+_client: Optional[MongoClient] = None
+_default_uri: Optional[str] = None
+_max_pool_size: int = 10
+_min_pool_size: int = 1
+
+def get_mongo_client(
+    mongo_uri: Optional[str]=None,
+    max_pool_size: Optional[int] = None, 
+    min_pool_size: Optional[int] = None,
+) -> MongoClient:
+    global _client, _default_uri, _max_pool_size, _min_pool_size
+    
+    # If no URI provided and we have a client, return existing client
+    if mongo_uri is None and _client is not None:
+        return _client
+    
+    # If URI changed or client doesn't exist, create new client
+    if _client is None or (mongo_uri is not None and mongo_uri != _default_uri):
+        if mongo_uri is None:
+            raise ValueError("mongo_uri must be provided on first call")
+        _default_uri = mongo_uri
+        if max_pool_size is not None:
+            _max_pool_size = max_pool_size
+        if min_pool_size is not None:
+            _min_pool_size = min_pool_size
+        _client = MongoClient(
+            mongo_uri,
+            maxPoolSize=_max_pool_size,
+            minPoolSize=_min_pool_size,
+        )
+    
+    return _client
+
+def init_mongo_client(mongo_uri: str, max_pool_size: int = 10, min_pool_size: int = 1) -> None:
+    get_mongo_client(mongo_uri, max_pool_size=max_pool_size, min_pool_size=min_pool_size)
 
 def put_raw_doc(db, doc_id: str, text: str) -> None:
     """

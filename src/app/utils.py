@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from typing import Any
-import logging
+import ..logging_config import get_logger
 
-log = logging.getLogger("precisbox.utils")
+log = get_logger("precisbox.utils")
 
 
 def safe_int(val: Any, default: int, field: str, doc_id: str) -> int:
