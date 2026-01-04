@@ -1,6 +1,20 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
+
+class Defaults:
+    """Default values used throughout the application."""
+    
+    # File defaults
+    DEFAULT_FILENAME: str = "upload.txt"
+    
+    # MIME type defaults
+    DEFAULT_MIME_TYPE: str = "application/octet-stream"
+    
+    # Status defaults
+    DEFAULT_STATUS: str = "unknown"
+
+
 class Settings(BaseSettings):
     # Database
     sqlite_path: str = Field(default="./meta.db")
@@ -24,6 +38,11 @@ class Settings(BaseSettings):
     
     # Upload
     max_upload_bytes: int = Field(default=2000000, ge=1)
+    
+    @property
+    def is_summarizer_enabled(self) -> bool:
+        """Check if summarizer is enabled based on OpenAI API key."""
+        return bool(self.openai_api_key)
     
     class Config:
         env_file = ".env"

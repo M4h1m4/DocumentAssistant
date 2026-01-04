@@ -36,9 +36,8 @@ def _startup() -> None:
     init_db(settings.sqlite_path)
     log.info("init_db ok (%s)", settings.sqlite_path)
 
-    summarizer_enabled = bool(settings.openai_api_key)
-    app.state.SUMMARIZER_ENABLED = summarizer_enabled
-    if summarizer_enabled:
+    app.state.SUMMARIZER_ENABLED = settings.is_summarizer_enabled
+    if settings.is_summarizer_enabled:
         log.info("summarizer enabled (model=%s)", settings.openai_model)
     else:
         # App can still run (uploads/metadata), but summarization should be treated as unavailable.
@@ -65,7 +64,7 @@ def healthz() -> dict:
 
 @app.get("/ready")
 def ready() -> JSONResponse:
-    if not app.state.SUMMARIZER_ENABLED:
+    if not settings.is_summarizer_enabled:
         return JSONResponse(
             status_code=503, 
             content={

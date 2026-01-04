@@ -3,11 +3,11 @@ from __future__ import annotations
 from uuid import uuid4
 from typing import Tuple, Dict, List, Any, Optional 
 from datetime import datetime 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import JSONResponse
 import anyio
 import logging
-from .config import settings
+from .config import settings, Defaults
 from .schemas import (
     ApiError,
     ApiErrorCode,
@@ -29,6 +29,7 @@ from .database.mongo import (
     read_summary
 )
 from .queue.redis_queue import get_redis, enqueue_job
+from .utils import safe_int
 
 log = logging.getLogger("precisbox.api")
 router = APIRouter(prefix="/docs")
@@ -45,24 +46,15 @@ def _err(code: ApiErrorCode, msg: str) -> ApiError:
 Hence we should also define these columns optional in the schemas.py
 """
 
-def _safe_int(val: Any, default: int, field: str, doc_id: str) -> int: 
-    try:
-        if val is None:
-            return default 
-        return int(val)
-    except Exception:
-        log.exception("Invalid %s=%r for doc_id=%s; defaulting to %d", field, val, doc_id, default)
-        return default
-
-def _to_meta(row: Dict[str, Any]) -> DocMetaResponse:
+def build_doc_meta_response(row: Dict[str, Any]) -> DocMetaResponse:
     doc_id = row["id"]
     filename = row["filename"]
     created_at = datetime.fromisoformat(row["created_at"])
     updated_at = datetime.fromisoformat(row["updated_at"])
 
     # Defensive
-    size = _safe_int(row.get("size"), 0, "size", doc_id)
-    attempts = _safe_int(row.get("attempts"), 0, "attempts", doc_id)
+    size = safe_int(row.get("size"), 0, "size", doc_id)
+    attempts = safe_int(row.get("attempts"), 0, "attempts", doc_id)
 
     mime = row.get("mime") or "application/octet-stream"
     sha256 = row.get("sha256") or ""
@@ -95,11 +87,8 @@ def _to_meta(row: Dict[str, Any]) -> DocMetaResponse:
     )
     
 @router.post("", response_model=DocCreateResponse, status_code=201)
-async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreateResponse:
-    # if not OPENAI_API_KEY:
-    #     raise HTTPException(status_code=500, detail="OPEN_API_KEY not set")
-    summarizer_enabled = bool(getattr(request.app.state, "SUMMARIZER_ENABLED", False))
-    if not summarizer_enabled:
+async def upload_doc(file: UploadFile = File(...)) -> DocCreateResponse:
+    if not settings.is_summarizer_enabled:
         raise HTTPException(status_code=503, detail="Summarizer disabled (OPENAI_API_KEY missing)")
 
     raw: bytes = await file.read()
@@ -114,8 +103,8 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded text")
 
     doc_id: str = uuid4().hex
-    filename: str = file.filename or "upload.txt"
-    original: str = file.filename or "upload.txt"
+    filename: str = file.filename or Defaults.DEFAULT_FILENAME
+    original: str = file.filename or Defaults.DEFAULT_FILENAME
     short = doc_id[:8]
     display_name = f"{original}_{short}"
     size: int = int(len(raw))
@@ -130,12 +119,13 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
                 size, 
                 mime, 
                 sha256,
-                "pending",
+                DocumentStatus.pending.value,
                 settings.openai_model,
             )
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write metadata")
+        log.exception("Failed to write metadata for doc_id=%s: %s", doc_id, e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
     # def mongo_write() -> None: #Write the raw document into mongodb
     #     client = get_mongo_client(MONGO_URI)
@@ -145,16 +135,17 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
     try:
         await anyio.to_thread.run_sync(lambda: write_raw_doc(settings.mongo_uri, settings.mongo_db, doc_id, text)) 
     except Exception as e:
+        log.exception("Failed to write document to MongoDB for doc_id=%s: %s", doc_id, e)
         await anyio.to_thread.run_sync(
             lambda: set_status(
                 settings.sqlite_path,
                 doc_id,
                 "failed",
                 model=settings.openai_model,
-                last_error=f"Mongo write failed {e}",
+                last_error=ApiErrorCode.MONGO_WRITE_FAILED.value,
             )
         )
-        raise HTTPException(status_code=500, detail=f"Mongo write failed {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
     """
     run_sync runs the function in background, so it does not block the async event loop that is this is pushed into the thread_loop
     In mean the server can handle other requests 
@@ -164,7 +155,7 @@ async def upload_doc(request: Request, file: UploadFile = File(...)) -> DocCreat
     # Enqueue job in Redis queue for background processing
     r = get_redis()
     enqueue_job(r, doc_id)
-    return DocCreateResponse(id=doc_id, status="pending", display_name=display_name)
+    return DocCreateResponse(id=doc_id, status=DocumentStatus.pending, display_name=display_name)
 
 @router.get("/{doc_id}", response_model=DocMetaResponse)
 async def get_doc(doc_id: str) -> DocMetaResponse:
@@ -172,7 +163,7 @@ async def get_doc(doc_id: str) -> DocMetaResponse:
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    return _to_meta(raw)
+    return build_doc_meta_response(raw)
 
 @router.get("/{doc_id}/summary", response_model=DocSummaryResponse)
 async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
@@ -180,8 +171,8 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
     if not raw:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    status: str = raw["status"]
-    if status == DocumentStatus.failed.value:
+    status = DocumentStatus(raw["status"])
+    if status == DocumentStatus.failed:
         body = DocSummaryResponse(
             id=doc_id, 
             status=DocumentStatus.failed,
@@ -190,28 +181,31 @@ async def get_doc_summary(doc_id: str) -> DocSummaryResponse:
         )
         return JSONResponse(status_code=409, content=body.model_dump())
 
-    if status != DocumentStatus.done.value:
+    if status != DocumentStatus.done:
         body = DocSummaryResponse(
             id=doc_id,
-            status=DocumentStatus(status),
+            status=status,
             summary=None,
             err=_err(ApiErrorCode.SUMMARY_NOT_READY, "Summary not ready yet"),
         )
         return JSONResponse(status_code=202, content=body.model_dump())
     
-    doc = await anyio.to_thread.run_sync(lambda: read_summary(settings.mongo_uri, settings.mongo_db, doc_id))
+    doc: Optional[Dict[str, Any]] = await anyio.to_thread.run_sync(lambda: read_summary(settings.mongo_uri, settings.mongo_db, doc_id))
     summary = None if not doc else doc.get("summary")
+    if summary is None:
+        log.warning("Summary is None for doc_id=%s despite status=done. doc=%s", doc_id, doc)
     return DocSummaryResponse(id=doc_id, status=DocumentStatus.done, summary=summary, err=None)
 
 @router.get("", response_model=DocListResponse)
 async def list_docs( #GET /docs?page=2&size=10&status=done
     page: int = Query(1, ge=1), # GET /docs?page=2 (default is greater than 1)
     size: int = Query(10, ge=1, le=100), # GET /docs?size=20 (default ge than 1 and less than 100)
-    status: Optional[str] = Query(None) #GET /docs?status=done
+    status: Optional[DocumentStatus] = Query(None) #GET /docs?status=done
 ) -> DocListResponse:
-    items, total = await anyio.to_thread.run_sync(lambda: list_documents(settings.sqlite_path, page, size, status))
+    status_str = status.value if status else None
+    items, total = await anyio.to_thread.run_sync(lambda: list_documents(settings.sqlite_path, page, size, status_str))
     return DocListResponse(
-        items=[_to_meta(r) for r in items],
+        items=[build_doc_meta_response(r) for r in items],
         total=total, 
         page=page,
         size=size, 

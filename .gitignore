@@ -19,3 +19,4 @@ meta.db-shm
 meta.db-wal
 
 .txt
+.DS_Store
