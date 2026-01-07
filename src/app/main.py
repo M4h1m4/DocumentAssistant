@@ -47,6 +47,7 @@ def _startup() -> None:
         "MongoDB client initialized with connection pooling (uri=%s, max_pool=%d, min_pool=%d)",
         settings.mongo_uri,
         settings.mongo_max_pool_size,
+        settings.mongo_min_pool_size,
     )
 
     app.state.SUMMARIZER_ENABLED = settings.is_summarizer_enabled

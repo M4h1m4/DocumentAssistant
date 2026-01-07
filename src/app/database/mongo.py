@@ -88,3 +88,16 @@ def read_summary(mongo_uri: str, mongo_db: str, doc_id: str) -> Optional[Dict[st
     client = get_mongo_client(mongo_uri)
     db = client[mongo_db]
     return get_summary(db, doc_id)
+
+def write_document_metadata(mongo_uri: str,
+    mongo_db: str,
+    doc_id: str,
+    metadata: Dict[str, Any]
+) -> None:
+    client = get_mongo_client(mongo_uri)
+    db = client[mongo_db]
+    db.docs.update_one(
+        {"_id": doc_id},
+        {"$set": {"metadata": metadata}},
+        upsert=True,
+    )

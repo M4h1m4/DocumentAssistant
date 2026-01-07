@@ -17,4 +17,7 @@ dependencies = [
     "sqlalchemy>=2.0.44",
     "structlog>=25.5.0",
     "uvicorn[standard]>=0.38.0",
+    "pymupdf>=1.24.0",  # PyMuPDF (fitz) - best for PDF + images
+    "pillow>=10.0.0",   # PIL - image processing
+    "pytesseract>=0.3.10",
 ]

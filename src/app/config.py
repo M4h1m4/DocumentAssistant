@@ -11,6 +11,11 @@ class Defaults:
     # MIME type defaults
     DEFAULT_MIME_TYPE: str = "application/octet-stream"
     
+    SUPPORTED_MIME_TYPES: set[str] = {
+        "text/plain",
+        "text/markdown",
+        "application/pdf",
+    }
     # Status defaults
     DEFAULT_STATUS: str = "unknown"
 
@@ -40,6 +45,10 @@ class Settings(BaseSettings):
     max_upload_bytes: int = Field(default=2000000, ge=1)
     mongo_max_pool_size: int = Field(default=10, ge=1)
     mongo_min_pool_size: int = Field(default=1, ge=0)
+
+    pdf_extract_images: bool = Field(default=True, description="Extract images from PDFs")
+    pdf_use_ocr: bool = Field(default=False, description="Use OCR to extract text from images")
+    pdf_max_image_size_mb: int = Field(default=10, ge=1, description="Max image size in MB")
     
     @property
     def is_summarizer_enabled(self) -> bool:

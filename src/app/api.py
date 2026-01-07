@@ -30,13 +30,20 @@ from .database.mongo import (
 from .queue.redis_queue import get_redis, enqueue_job
 from .utils import safe_int
 
-from ..logging_config import get_logger
+from .services.content_extractor import (
+    extract_content,
+    ExtractedContent,
+    ContentExtractionError,
+)
+
+from .logging_config import get_logger
+
 
 log = get_logger("precisbox.api")
 
 router = APIRouter(prefix="/docs")
 
-SUPPORTED_MIME = {"text/plain", "text/markdown"}  
+SUPPORTED_MIME = Defaults.SUPPORTED_MIME_TYPES
 
 def _err(code: ApiErrorCode, msg: str) -> ApiError:
     return ApiError(code=code, message=msg)
@@ -96,15 +103,29 @@ async def upload_doc(file: UploadFile = File(...)) -> DocCreateResponse:
     raw: bytes = await file.read()
     if len(raw) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail=f"File too large(max {settings.max_upload_bytes}bytes)")
-    mime: str = file.content_type or "application/octet-stream"
-    if mime not in ("text/plain", "text/markdown"):
+    mime: str = file.content_type or Defaults.DEFAULT_MIME_TYPE
+    if mime not in SUPPORTED_MIME:
         raise HTTPException(status_code=400, detail=f"unsupported mime type{mime}. Use text/plain for now")
+    
+    doc_id: str = uuid4().hex  # Generate doc_id early for error logging
+    
     try:
-        text: str = decode_text(raw)
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded text")
+        extracted_content : ExtractedContent = await anyio.to_thread.run_sync(
+            lambda: extract_content(
+                file_bytes=raw,  # Raw file bytes
+                mime_type=mime,  # File type (text/plain, application/pdf, etc.)
+                extract_images=settings.pdf_extract_images,  # Config: extract images from PDFs?
+                use_ocr=settings.pdf_use_ocr,  # Config: run OCR on images?
+            )
+        )
+        text = extracted_content.text
 
-    doc_id: str = uuid4().hex
+    except ContentExtractionError as e:
+        log.exception("Content extraction failed for doc_id=%s: %s", doc_id, e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to extract content: {str(e)}"
+        )
     filename: str = file.filename or Defaults.DEFAULT_FILENAME
     original: str = file.filename or Defaults.DEFAULT_FILENAME
     short = doc_id[:8]

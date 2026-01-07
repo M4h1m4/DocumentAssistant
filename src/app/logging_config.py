@@ -1,13 +1,24 @@
 import logging
 import sys 
-import pythonjsonlogger as jsonlogger
+
+try:
+    from pythonjsonlogger.jsonlogger import JsonFormatter
+except ImportError:
+    try:
+        # Alternative import path for some versions
+        from pythonjsonlogger import jsonlogger
+        JsonFormatter = jsonlogger.JsonFormatter
+    except ImportError:
+        raise ImportError(
+            "python-json-logger is required. Install with: uv sync or pip install python-json-logger"
+        )
 
 def setup_json_logging(log_level: str="INFO") -> None:
     root_logger = logging.getLogger() # Get root logger
     root_logger.handlers=[] #remove existing loggers 
-    handler = logging.StreamHandler(sys.stdout) # creating a consolde handler
+    handler = logging.StreamHandler(sys.stdout) # creating a console handler
 
-    formatter = jsonlogger.JsonFormatter(
+    formatter = JsonFormatter(
         fmt='%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
