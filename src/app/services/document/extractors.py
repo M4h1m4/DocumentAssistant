@@ -1,4 +1,4 @@
-git from __future__ import annotations
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -9,11 +9,11 @@ from io import BytesIO
 
 import fitz  # PyMuPDF
 from PIL import Image as PILImage
-import pytesseract  # OCR library (requires Tesseract binary installed)
+import pytesseract  
 
-from ..config import Defaults
-from ..utils import decode_text  # From app/utils.py (after moving hashing functions)
-from ..logging_config import get_logger
+from ...config import Defaults
+from ...utils import decode_text 
+from ...logging_config import get_logger
 
 log = get_logger("precisbox.services.extractors")
 

@@ -15,6 +15,7 @@ from .schemas import (
     DocSummary,
     DocListResponse,
     DocumentStatus,
+    RAGQueryRequest,
 )
 from .utils import sha256_bytes
 from .database.sqlite import (
@@ -36,6 +37,10 @@ from .services.document.extractors import (
     ContentExtractionError,
 )
 
+from .services.rag.rag import RAGService
+from .services.rag.vector_store import VectorStore 
+from .services.embeddings.embeddings import EmbeddingService
+
 from .logging_config import get_logger
 
 
@@ -45,15 +50,29 @@ router = APIRouter(prefix="/docs")
 
 SUPPORTED_MIME = Defaults.SUPPORTED_MIME_TYPES
 
+rag_service: Optional[RAGService] = None
+
+def init_rag_service() -> None:
+    """Initialize RAG service during startup."""
+    global rag_service
+    if settings.enable_rag:
+        embedding_service = EmbeddingService(
+            api_key=settings.openai_api_key,
+            model=settings.embedding_model,
+        )
+        vector_store = VectorStore(
+            collection_name="documents",
+            persist_directory=settings.vector_store_path,
+        )
+        rag_service = RAGService(
+            embedding_service=embedding_service,
+            vector_store=vector_store,
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+        )
+
 def _err(code: ApiErrorCode, msg: str) -> ApiError:
     return ApiError(code=code, message=msg)
-
-
-"""
-#row["x"] is used for columns that are guaranteed to exist
-#Incase if they don't exists and we still want to continue the application without any error like keyerrors we use row.get("x") cause .get returns null if the key does not exist. 
-Hence we should also define these columns optional in the schemas.py
-"""
 
 def build_doc_meta_response(row: Dict[str, Any]) -> DocMetaResponse:
     doc_id = row["id"]
@@ -159,6 +178,21 @@ async def upload_doc(file: UploadFile = File(...)) -> DocCreateResponse:
 
     try:
         await anyio.to_thread.run_sync(lambda: write_raw_doc(settings.mongo_uri, settings.mongo_db, doc_id, text)) 
+        if settings.enable_rag and rag_service:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: rag_service.index_document(
+                        doc_id=doc_id,
+                        text=text,
+                        metadata={
+                            "filename": filename,
+                            "mime_type": mime,
+                            "size": size,
+                        }
+                    )
+                )
+            except Exception as e:
+                log.warning("Failed to index document for RAG doc_id=%s: %s", doc_id, e)
     except Exception as e:
         log.exception("Failed to write document to MongoDB for doc_id=%s: %s", doc_id, e)
         await anyio.to_thread.run_sync(
@@ -235,4 +269,48 @@ async def list_docs( #GET /docs?page=2&size=10&status=done
         page=page,
         size=size, 
     )
+
+@router.post("/query", status_code=200)
+async def query_documents(request: RAGQueryRequest) -> Dict[str, Any]:
+    """
+    Query documents using RAG (Retrieval-Augmented Generation).
+    
+    Accepts natural language queries in the request body - no URL encoding needed!
+    Works like a chatbot - just write your question naturally.
+    
+    Example:
+    {
+        "query": "What are the key points discussed in this document?",
+        "doc_id": "abc123...",  # optional: filter to specific document
+        "top_k": 5              # optional: number of chunks to retrieve (default: 5)
+    }
+    """
+    if not settings.enable_rag:
+        raise HTTPException(status_code=503, detail="RAG is not enabled")
+    
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    # Query using RAG
+    response, retrieved_chunks = await anyio.to_thread.run_sync(
+        lambda: rag_service.query(
+            query_text=request.query,
+            top_k=request.top_k,
+            doc_filter=request.doc_id,
+        )
+    )
+    
+    return {
+        "query": request.query,
+        "answer": response,
+        "sources": [
+            {
+                "doc_id": chunk.metadata.get("doc_id"),
+                "chunk_index": chunk.metadata.get("chunk_index"),
+                "score": chunk.score,
+                "preview": chunk.text[:200] + "..." if len(chunk.text) > 200 else chunk.text,
+            }
+            for chunk in retrieved_chunks
+        ],
+    }
     

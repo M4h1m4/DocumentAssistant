@@ -20,4 +20,5 @@ dependencies = [
     "pymupdf>=1.24.0",  # PyMuPDF (fitz) - best for PDF + images
     "pillow>=10.0.0",   # PIL - image processing
     "pytesseract>=0.3.10",
+    "chromadb>=0.4.0",  # Vector database for RAG
 ]

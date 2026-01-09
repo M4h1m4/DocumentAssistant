@@ -8,6 +8,7 @@ from .database.mongo import init_mongo_client
 from .queue.redis_queue_worker import start_worker, workerconfig
 from .middleware.rate_limit_redis import RedisTokenBucketLimiter
 from .middleware.rate_limit_middleware import RateLimitMiddleware
+from .api import init_rag_service
 
 from .logging_config import setup_json_logging, get_logger
 from .config import settings
@@ -71,6 +72,9 @@ def _startup() -> None:
     )
     start_worker(cfg)
     log.info("workers started (n=%d)", settings.workers)
+    if settings.enable_rag:
+        init_rag_service()
+        log.info("RAG service initialized (vector_store=%s)", settings.vector_store_path)
 
 @app.get("/healthz")
 def healthz() -> dict:

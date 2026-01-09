@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 from dataclasses import dataclass 
 
-from ..logging_config import get_logger
+from ...logging_config import get_logger
 
 log = get_logger("precisbox.services.chunking")
 

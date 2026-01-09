@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional, List
 from enum import Enum
@@ -55,3 +55,9 @@ class ApiErrorCode(str, Enum):
 class ApiError(BaseModel):
     code: ApiErrorCode
     message: str
+
+class RAGQueryRequest(BaseModel):
+    """Request model for RAG query endpoint - allows natural language queries without URL encoding."""
+    query: str = Field(..., description="Natural language query - write your question normally, no URL encoding needed!")
+    doc_id: Optional[str] = Field(None, description="Filter query to a specific document ID")
+    top_k: int = Field(5, ge=1, le=20, description="Number of relevant chunks to retrieve (1-20)")

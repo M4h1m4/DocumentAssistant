@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Tuple, Dict, Any 
 from openai import OpenAI
-from ..logging_config import get_logger 
+from ...logging_config import get_logger 
 
 log = get_logger("precisbox.services.embeddings")
 

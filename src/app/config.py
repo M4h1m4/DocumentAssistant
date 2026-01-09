@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     pdf_extract_images: bool = Field(default=True, description="Extract images from PDFs")
     pdf_use_ocr: bool = Field(default=False, description="Use OCR to extract text from images")
     pdf_max_image_size_mb: int = Field(default=10, ge=1, description="Max image size in MB")
+
+    enable_rag: bool = Field(default=False, description="Enable RAG capabilities")
+    vector_store_path: str = Field(default="./vector_store", description="Vector store directory")
+    embedding_model: str = Field(default="text-embedding-3-small", description="Embedding model")
+    chunk_size: int = Field(default=1000, ge=100, description="Text chunk size for RAG")
+    chunk_overlap: int = Field(default=200, ge=0, description="Chunk overlap size")
+    rag_top_k: int = Field(default=5, ge=1, le=20, description="Number of chunks to retrieve for RAG")
     
     @property
     def is_summarizer_enabled(self) -> bool:
