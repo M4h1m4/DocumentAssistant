@@ -1,17 +1,12 @@
 import logging
 import sys 
 
-try:
-    from pythonjsonlogger.jsonlogger import JsonFormatter
-except ImportError:
-    try:
-        # Alternative import path for some versions
-        from pythonjsonlogger import jsonlogger
-        JsonFormatter = jsonlogger.JsonFormatter
-    except ImportError:
-        raise ImportError(
-            "python-json-logger is required. Install with: uv sync or pip install python-json-logger"
-        )
+# WHY: Direct imports - dependencies are declared in pyproject.toml
+# - python-json-logger should be installed via uv sync
+# - No runtime capability detection - fail fast if dependency is missing
+from pythonjsonlogger import jsonlogger
+
+JsonFormatter = jsonlogger.JsonFormatter
 
 def setup_json_logging(log_level: str="INFO") -> None:
     root_logger = logging.getLogger() # Get root logger

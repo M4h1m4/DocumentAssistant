@@ -16,7 +16,7 @@ from .schemas import (
     DocListResponse,
     DocumentStatus,
 )
-from .services.hashing import sha256_bytes, decode_text
+from .utils import sha256_bytes
 from .database.sqlite import (
     insert_document,
     fetch_document,
@@ -30,8 +30,8 @@ from .database.mongo import (
 from .queue.redis_queue import get_redis, enqueue_job
 from .utils import safe_int
 
-from .services.content_extractor import (
-    extract_content,
+from .services.document.extractors import (
+    ContentExtractorFactory,
     ExtractedContent,
     ContentExtractionError,
 )
@@ -110,13 +110,15 @@ async def upload_doc(file: UploadFile = File(...)) -> DocCreateResponse:
     doc_id: str = uuid4().hex  # Generate doc_id early for error logging
     
     try:
-        extracted_content : ExtractedContent = await anyio.to_thread.run_sync(
-            lambda: extract_content(
-                file_bytes=raw,  # Raw file bytes
-                mime_type=mime,  # File type (text/plain, application/pdf, etc.)
-                extract_images=settings.pdf_extract_images,  # Config: extract images from PDFs?
-                use_ocr=settings.pdf_use_ocr,  # Config: run OCR on images?
-            )
+        # Create appropriate extractor based on MIME type
+        extractor = ContentExtractorFactory.create(
+            mime_type=mime,
+            extract_images=settings.pdf_extract_images,
+            use_ocr=settings.pdf_use_ocr,
+        )
+        # Extract content using the extractor
+        extracted_content: ExtractedContent = await anyio.to_thread.run_sync(
+            lambda: extractor.extract(file_bytes=raw, mime_type=mime)
         )
         text = extracted_content.text
 

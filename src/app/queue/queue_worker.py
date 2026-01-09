@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from .db_sql import set_status, record_failure, get_attempts, get_doc_meta
 from .db_mongo import get_mongo_client, put_summary, get_raw_doc
-from .services.summarize import summarize_text
+from ..services.document.summarizer import summarize_text
 from .schemas import DocumentStatus, ApiErrorCode
 
 log = logging.getLogger("precisbox.queue_worker")

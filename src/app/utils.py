@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from .logging_config import get_logger
 
@@ -26,4 +27,36 @@ def safe_int(val: Any, default: int, field: str, doc_id: str) -> int:
     except Exception:
         log.exception("Invalid %s=%r for doc_id=%s; defaulting to %d", field, val, doc_id, default)
         return default
+
+
+def sha256_bytes(data: bytes) -> str:
+    """
+    Compute SHA-256 hash of bytes.
+    
+    Returns SHA-256 hex digest for deduplication
+    (same file uploaded again gets the same hash).
+    
+    Args:
+        data: Raw bytes to hash
+        
+    Returns:
+        Hexadecimal string representation of SHA-256 hash
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
+def decode_text(raw: bytes) -> str:
+    """
+    Decode bytes as UTF-8 text.
+    
+    Args:
+        raw: Raw bytes to decode
+        
+    Returns:
+        Decoded UTF-8 string
+        
+    Raises:
+        UnicodeDecodeError: If bytes are not valid UTF-8
+    """
+    return raw.decode("utf-8")
 

@@ -11,7 +11,7 @@ import redis
 from .redis_queue import get_redis, ensure_group, read_job, ack_job, enqueue_job
 from ..database.sqlite import record_failure, set_status, get_doc_meta
 from ..database.mongo import get_mongo_client, get_raw_doc, put_summary
-from ..services.summarize import summarize_text
+from ..services.document.summarizer import summarize_text
 from ..schemas import DocumentStatus
 
 from ..logging_config import get_logger
