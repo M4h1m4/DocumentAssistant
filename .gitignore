@@ -20,3 +20,4 @@ meta.db-wal
 
 .txt
 .DS_Store
+vector_store/
