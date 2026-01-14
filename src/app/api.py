@@ -4,7 +4,7 @@ from uuid import uuid4
 from typing import Tuple, Dict, List, Any, Optional 
 from datetime import datetime 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import anyio
 from .config import settings, Defaults
 from .schemas import (
@@ -14,6 +14,7 @@ from .schemas import (
     DocMetaResponse,
     DocSummary,
     DocListResponse,
+    DocContentResponse,
     DocumentStatus,
     RAGQueryRequest,
 )
@@ -23,10 +24,13 @@ from .database.sqlite import (
     fetch_document,
     list_documents,
     set_status,
+    delete_document as delete_document_sqlite,
 )
 from .database.mongo import (
     write_raw_doc,
-    read_summary
+    read_summary,
+    delete_document as delete_document_mongo,
+    read_raw_doc,
 )
 from .queue.redis_queue import get_redis, enqueue_job
 from .utils import safe_int
@@ -270,10 +274,10 @@ async def list_docs( #GET /docs?page=2&size=10&status=done
         size=size, 
     )
 
-@router.post("/query", status_code=200)
-async def query_documents(request: RAGQueryRequest) -> Dict[str, Any]:
+@router.post("/search", status_code=200)
+async def search_documents(request: RAGQueryRequest) -> Dict[str, Any]:
     """
-    Query documents using RAG (Retrieval-Augmented Generation).
+    Search/query documents using RAG (Retrieval-Augmented Generation).
     
     Accepts natural language queries in the request body - no URL encoding needed!
     Works like a chatbot - just write your question naturally.
@@ -313,4 +317,80 @@ async def query_documents(request: RAGQueryRequest) -> Dict[str, Any]:
             for chunk in retrieved_chunks
         ],
     }
+
+@router.get("/{doc_id}/content", response_model=DocContentResponse)
+async def get_doc_content(doc_id: str) -> DocContentResponse:
+    """
+    Get raw document content.
+    
+    Returns the original text content extracted from the document.
+    """
+    # Check if document exists
+    raw = await anyio.to_thread.run_sync(lambda: fetch_document(settings.sqlite_path, doc_id))
+    if not raw:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Get content from MongoDB
+    content = await anyio.to_thread.run_sync(
+        lambda: read_raw_doc(settings.mongo_uri, settings.mongo_db, doc_id)
+    )
+    
+    if content is None:
+        raise HTTPException(status_code=404, detail="Document content not found")
+    
+    mime_type = raw.get("mime") or "text/plain"
+    return DocContentResponse(
+        id=doc_id,
+        content=content,
+        mime_type=mime_type,
+    )
+
+@router.delete("/{doc_id}", status_code=204)
+async def delete_doc(doc_id: str) -> Response:
+    """
+    Delete a document.
+    
+    Deletes document from:
+    - SQLite (metadata)
+    - MongoDB (content and summary)
+    - Vector store (embeddings, if RAG enabled)
+    
+    Returns 204 No Content on success.
+    """
+    # Check if document exists
+    raw = await anyio.to_thread.run_sync(lambda: fetch_document(settings.sqlite_path, doc_id))
+    if not raw:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Delete from SQLite
+    deleted_sqlite = await anyio.to_thread.run_sync(
+        lambda: delete_document_sqlite(settings.sqlite_path, doc_id)
+    )
+    if not deleted_sqlite:
+        log.warning("Document not found in SQLite for deletion doc_id=%s", doc_id)
+    
+    # Delete from MongoDB
+    try:
+        deleted_mongo = await anyio.to_thread.run_sync(
+            lambda: delete_document_mongo(settings.mongo_uri, settings.mongo_db, doc_id)
+        )
+        if not deleted_mongo:
+            log.warning("Document not found in MongoDB for deletion doc_id=%s", doc_id)
+    except Exception as e:
+        log.exception("Failed to delete document from MongoDB doc_id=%s: %s", doc_id, e)
+        # Continue with deletion even if MongoDB fails
+    
+    # Delete from vector store if RAG is enabled
+    if settings.enable_rag and rag_service:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: rag_service.vector_store.delete_document(doc_id)
+            )
+            log.info("Deleted document from vector store doc_id=%s", doc_id)
+        except Exception as e:
+            log.warning("Failed to delete document from vector store doc_id=%s: %s", doc_id, e)
+            # Continue even if vector store deletion fails
+    
+    # Return 204 No Content (standard for DELETE)
+    return Response(status_code=204)
     

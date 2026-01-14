@@ -61,3 +61,9 @@ class RAGQueryRequest(BaseModel):
     query: str = Field(..., description="Natural language query - write your question normally, no URL encoding needed!")
     doc_id: Optional[str] = Field(None, description="Filter query to a specific document ID")
     top_k: int = Field(5, ge=1, le=20, description="Number of relevant chunks to retrieve (1-20)")
+
+class DocContentResponse(BaseModel):
+    """Response model for document content endpoint."""
+    id: str
+    content: str
+    mime_type: str

@@ -183,3 +183,14 @@ def get_doc_meta(sqlite_path: str, doc_id: str) -> Optional[Dict[str, Any]]:
         if row is None:
             return None 
         return dict(row)
+
+def delete_document(sqlite_path: str, doc_id: str) -> bool:
+    """
+    Delete a document from SQLite.
+    
+    Returns:
+        True if document was deleted, False if document not found
+    """
+    with get_conn(sqlite_path) as conn:
+        cursor = conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        return cursor.rowcount > 0

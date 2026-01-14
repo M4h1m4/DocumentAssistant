@@ -101,3 +101,15 @@ def write_document_metadata(mongo_uri: str,
         {"$set": {"metadata": metadata}},
         upsert=True,
     )
+
+def delete_document(mongo_uri: str, mongo_db: str, doc_id: str) -> bool:
+    """
+    Delete a document from MongoDB.
+    
+    Returns:
+        True if document was deleted, False if document not found
+    """
+    client = get_mongo_client(mongo_uri)
+    db = client[mongo_db]
+    result = db.docs.delete_one({"_id": doc_id})
+    return result.deleted_count > 0
