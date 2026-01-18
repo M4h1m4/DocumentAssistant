@@ -205,6 +205,3 @@ The project uses:
 6. **Querying**: Natural language queries are converted to embeddings and matched against stored chunks
 7. **Response Generation**: Top-k relevant chunks are retrieved and used as context for LLM-generated responses
 
-## License
-
-[Add your license here]
